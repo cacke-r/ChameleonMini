@@ -33,8 +33,8 @@ SETTINGS	+= -DSUPPORT_FIRMWARE_UPGRADE
 #SETTINGS	+= -DDEFAULT_CONFIGURATION=CONFIG_MF_CLASSIC_1K
 #SETTINGS	+= -DDEFAULT_CONFIGURATION=CONFIG_MF_CLASSIC_4K
 #SETTINGS	+= -DDEFAULT_CONFIGURATION=CONFIG_MF_ULTRALIGHT
-SETTINGS	+= -DDEFAULT_CONFIGURATION=CONFIG_NONE
-#SETTINGS	+= -DDEFAULT_CONFIGURATION=CONFIG_ISO14443A_READER
+#SETTINGS	+= -DDEFAULT_CONFIGURATION=CONFIG_NONE # TODO: de-comment this
+SETTINGS	+= -DDEFAULT_CONFIGURATION=CONFIG_ISO15693_SNIFF # TODO: remove this  
 
 #Default button actions
 #SETTINGS	+= -DDEFAULT_RBUTTON_ACTION=BUTTON_ACTION_UID_RANDOM
@@ -50,7 +50,8 @@ SETTINGS	+= -DDEFAULT_LBUTTON_ACTION=BUTTON_ACTION_RECALL_MEM
 SETTINGS	+= -DBUTTON_SETTING_GLOBAL
 
 #Default LED functions
-SETTINGS	+= -DDEFAULT_RED_LED_ACTION=LED_SETTING_CHANGE
+#SETTINGS	+= -DDEFAULT_RED_LED_ACTION=LED_SETTING_CHANGE # TODO: de-comment this
+SETTINGS	+= -DDEFAULT_RED_LED_ACTION=LED_CODEC_RX # TODO: remove this
 SETTINGS	+= -DDEFAULT_GREEN_LED_ACTION=LED_POWERED
 
 #Define if LED function setting should be independent of active setting
@@ -65,7 +66,7 @@ SETTINGS	+= -DDEFAULT_LOG_MODE=LOG_MODE_OFF
 SETTINGS	+= -DLOG_SETTING_GLOBAL
 
 #Default setting
-SETTINGS	+= -DDEFAULT_SETTING=SETTINGS_FIRST
+SETTINGS	+= -DDEFAULT_SETTING=SETTINGS_FIRST 
 
 #Default pending task timeout
 SETTINGS	+= -DDEFAULT_PENDING_TASK_TIMEOUT=50 #* 100ms
@@ -101,8 +102,8 @@ SRC         += $(TARGET).c LUFADescriptors.c System.c Configuration.c Random.c C
 SRC         += Terminal/Terminal.c Terminal/Commands.c Terminal/XModem.c Terminal/CommandLine.c
 SRC         += Codec/Codec.c Codec/ISO14443-2A.c Codec/Reader14443-2A.c Codec/SniffISO14443-2A.c Codec/Reader14443-ISR.S
 SRC         += Application/MifareUltralight.c Application/MifareClassic.c Application/ISO14443-3A.c Application/Crypto1.c Application/Reader14443A.c Application/Sniff14443A.c Application/CryptoTDEA.S 
-SRC         += Codec/ISO15693.c
-SRC         += Application/Vicinity.c Application/Sl2s2002.c Application/TITagitstandard.c Application/ISO15693-A.c Application/EM4233.c
+SRC         += Codec/ISO15693.c Codec/SniffISO15693.c
+SRC         += Application/Vicinity.c Application/Sl2s2002.c Application/TITagitstandard.c Application/ISO15693-A.c Application/EM4233.c Application/Sniff15693.c
 SRC         += $(LUFA_SRC_USB) $(LUFA_SRC_USBCLASS)
 LUFA_PATH    = ../LUFA
 CC_FLAGS     = -DUSE_LUFA_CONFIG_HEADER -DFLASH_DATA_ADDR=$(FLASH_DATA_ADDR) -DFLASH_DATA_SIZE=$(FLASH_DATA_SIZE) -DSPM_HELPER_ADDR=$(SPM_HELPER_ADDR) -DBUILD_DATE=$(BUILD_DATE) -DCOMMIT_ID=\"$(COMMIT_ID)\" $(SETTINGS)

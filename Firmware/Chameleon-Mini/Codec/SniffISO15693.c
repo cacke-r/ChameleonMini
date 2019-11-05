@@ -1,12 +1,11 @@
 /*
- * ISO15693.c
+ * SniffISO15693.c
  *
  *  Created on: 25.01.2017
- *      Author: Phillip Nash
- *      Modified by: ceres-c
+ *      Author: ceres-c & MrMoDDoM
  */
 
-#include "ISO15693.h"
+#include "SniffISO15693.h"
 #include "../System.h"
 #include "../Application/Application.h"
 #include "LEDHook.h"
@@ -87,11 +86,13 @@ static volatile uint16_t ReadCommandFromReader = 0;
  * and unregistered writing the INT0MASK to 0
  */
 // ISR(CODEC_DEMOD_IN_INT0_VECT)
-void isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT(void)
+void isr_SNIFF_ISO15693_CODEC_DEMOD_IN_INT0_VECT(void)
 {
+    LEDHook(LED_CODEC_RX, LED_PULSE);
+
     /* Start sample timer CODEC_TIMER_SAMPLING (TCD0).
      * Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm),
-     * the period for clock sampling is specified in StartISO15693Demod.
+     * the period for clock sampling is specified in StartSniffISO15693Demod.
      */
     CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
     /* Sets register INTCTRLB to TC_CCCINTLVL_HI_gc = (0x03<<4) to enable compare/capture for high level interrupts on Channel C (CCC) */
@@ -104,7 +105,7 @@ void isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT(void)
 /* This function is called from isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT
  * when we have 8 bits in SampleRegister and they represent an end of frame.
  */
-INLINE void ISO15693_EOC(void)
+INLINE void SNIFF_ISO15693_EOC_VCD(void)
 {
     /* Set bitrate required by the reader on SOF for our following response */
     BitRate1 = 256 * 4; // 256 * 4 - 1
@@ -148,7 +149,7 @@ INLINE void ISO15693_EOC(void)
  * It disables its own interrupt when receives an EOF (calling ISO15693_EOC) or when it receives garbage
  */
 // ISR(CODEC_TIMER_SAMPLING_CCC_VECT) // Reading data sent from the reader
-void isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT(void)
+void isr_SNIFF_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT(void)
 {
     /* Shift demod data */
     SampleRegister = (SampleRegister << 1) | (!(CODEC_DEMOD_IN_PORT.IN & CODEC_DEMOD_IN_MASK) ? 0x01 : 0x00);
@@ -179,7 +180,7 @@ void isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT(void)
             case DEMOD_1_OUT_OF_4_STATE:
                 if (SampleRegister == EOC_CODE)
                 {
-                    ISO15693_EOC();
+                    SNIFF_ISO15693_EOC_VCD();
                 } else {
                     uint8_t SampleData = ~SampleRegister;
                     if (SampleData == (0x01 << 6))
@@ -220,7 +221,7 @@ void isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT(void)
             case DEMOD_1_OUT_OF_256_STATE:
                 if (SampleRegister == EOC_CODE)
                 {
-                    ISO15693_EOC();
+                    SNIFF_ISO15693_EOC_VCD();
                 } else {
                     uint8_t Position = ((SampleDataCount / 2) % 256) - 1;
                     uint8_t SampleData = ~SampleRegister;
@@ -270,7 +271,7 @@ void isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT(void)
  * It disables its own interrupt when all data has been sent
  */
 //ISR(CODEC_TIMER_LOADMOD_CCB_VECT)
-void isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void)
+void isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void)
 {
     static void* JumpTable[] = {
         [LOADMOD_START_SINGLE]  = &&LOADMOD_START_SINGLE_LABEL,
@@ -473,8 +474,9 @@ void isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void)
     return;
 }
 
+
 /* This functions resets all global variables used in the codec and enables interrupts to wait for reader data */
-void StartISO15693Demod(void) {
+void StartSniffISO15693Demod(void) {
     /* Reset global variables to default values */
     CodecBufferPtr = CodecBuffer;
     Flags.DemodFinished = 0;
@@ -536,27 +538,27 @@ void StartISO15693Demod(void) {
     CODEC_DEMOD_IN_PORT.INT0MASK = CODEC_DEMOD_IN_MASK0;
 }
 
-void ISO15693CodecInit(void) 
+void SniffISO15693CodecInit(void) 
 {
     CodecInitCommon();
 
     /* Register isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT function
      * to CODEC_TIMER_SAMPLING (TCD0)'s Counter Channel C (CCC)
      */
-    isr_func_TCD0_CCC_vect = &isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT;
+    isr_func_TCD0_CCC_vect = &isr_SNIFF_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT;
     /* Register isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT function
      * to CODEC_DEMOD_IN_PORT (PORTB) interrupt 0
      */
-    isr_func_CODEC_DEMOD_IN_INT0_VECT = &isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT;
+    isr_func_CODEC_DEMOD_IN_INT0_VECT = &isr_SNIFF_ISO15693_CODEC_DEMOD_IN_INT0_VECT;
     /* Register isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT function
      * to CODEC_TIMER_LOADMOD (TCE0)'s Counter Channel B (CCB)
      */
-    isr_func_CODEC_TIMER_LOADMOD_CCB_VECT = &isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT;
+    isr_func_CODEC_TIMER_LOADMOD_CCB_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT;
 
-    StartISO15693Demod();
+    StartSniffISO15693Demod();
 }
 
-void ISO15693CodecDeInit(void) 
+void SniffISO15693CodecDeInit(void) 
 {
     /* Gracefully shutdown codec */
     CODEC_DEMOD_IN_PORT.INT0MASK = 0;
@@ -598,9 +600,11 @@ void ISO15693CodecDeInit(void)
     CodecSetLoadmodState(false);
 }
 
-void ISO15693CodecTask(void) 
+void SniffISO15693CodecTask(void) 
 {
+
     if (Flags.DemodFinished) {
+        
         Flags.DemodFinished = 0;
 
         uint16_t DemodByteCount = ByteCount;
@@ -609,8 +613,8 @@ void ISO15693CodecTask(void)
 
         if (DemodByteCount > 0)
         {
-            LogEntry(LOG_INFO_CODEC_RX_DATA, CodecBuffer, DemodByteCount);
-            //LEDHook(LED_CODEC_RX, LED_PULSE);
+            LogEntry(LOG_INFO_CODEC_SNI_READER_DATA, CodecBuffer, DemodByteCount);
+            LEDHook(LED_CODEC_RX, LED_PULSE);
 
             if (CodecBuffer[0] & ISO15693_REQ_SUBCARRIER_DUAL)
             {
@@ -643,13 +647,13 @@ void ISO15693CodecTask(void)
             /* Sets register INTCTRLB to 0 to disable all compare/capture interrupts */
             CODEC_TIMER_LOADMOD.INTCTRLB = 0;
 
-            StartISO15693Demod();
+            StartSniffISO15693Demod();
         }
     }
 
-    if (Flags.LoadmodFinished) {
-        Flags.LoadmodFinished = 0;
-        /* Load modulation has been finished. Stop it and start to listen for incoming data again. */
-        StartISO15693Demod();
-    }
+    // if (Flags.LoadmodFinished) {
+    //     Flags.LoadmodFinished = 0;
+    //     /* Load modulation has been finished. Stop it and start to listen for incoming data again. */
+    //     StartSniffISO15693Demod();
+    // }
 }
