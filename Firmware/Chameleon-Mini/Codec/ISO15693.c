@@ -509,8 +509,8 @@ void StartISO15693Demod(void) {
     /* Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm), the period for clock sampling is specified above */
     CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
     /* Sets register INTCTRLB to TC_CCCINTLVL_OFF_gc = (0x00<<4) to disable compare/capture C interrupts
-     *
-     * TODO Why turn it off?
+     * It is now turned off in order to wait for the first pulse and start sampling once it occurs,
+     * will be enabled in isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT
      */
     CODEC_TIMER_SAMPLING.INTCTRLB = TC_CCCINTLVL_OFF_gc;
 

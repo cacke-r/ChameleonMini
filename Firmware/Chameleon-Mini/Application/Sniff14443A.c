@@ -4,14 +4,12 @@
 // Currently only support Autocalibrate
 //
 
-#include <stdbool.h>
 #include <LED.h>
 #include "Sniff14443A.h"
 #include "Codec/SniffISO14443-2A.h"
 extern bool checkParityBits(uint8_t * Buffer, uint16_t BitCount);
 
 Sniff14443Command Sniff14443CurrentCommand = Sniff14443_Do_Nothing;
-//bool selected = false;
 static enum {
     STATE_IDLE,
     STATE_REQA,
