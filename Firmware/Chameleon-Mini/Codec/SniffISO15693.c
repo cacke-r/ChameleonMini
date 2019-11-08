@@ -42,6 +42,8 @@
 #define BitSampleCount          CodecCount16Register2
 #define CodecBufferPtr          CodecPtrRegister1
 
+#define CODEC_18uS_SLOT_TIMER CODEC_READER_TIMER
+
 static volatile struct {
     volatile bool ReaderDemodFinished;
     volatile bool CardDemodFinished;
@@ -384,7 +386,7 @@ void StartSniffISO15693Demod(void) {
     /* Set event action for CODEC_TIMER_SAMPLING (TCD0) to restart and trigger CODEC_TIMER_MODSTART_EVSEL = TC_EVSEL_CH0_gc = Event Channel 0 */
     CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
     /* Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm), the period for clock sampling is specified above */
-    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
+    // CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
     /* Sets register INTCTRLB to TC_CCCINTLVL_OFF_gc = (0x00<<4) to disable compare/capture C interrupts
      *
      * TODO Why turn it off?
@@ -443,6 +445,19 @@ void SniffISO15693CodecDeInit(void) {
 
     CodecSetSubcarrier(CODEC_SUBCARRIERMOD_OFF, 0);
     CodecSetDemodPower(false);
+}
+
+void StartSniffISO15693Card_Dual_Demod(void) {
+
+    CODEC_18uS_SLOT_TIMER.CNT = 0;
+    CODEC_18uS_SLOT_TIMER.CTRLA = TC_CLKSEL_DIV4_gc;
+    CODEC_18uS_SLOT_TIMER.CTRLB = 0; // Normal mode
+    CODEC_18uS_SLOT_TIMER.CTRLC = 0; // No waveform generator in use
+    CODEC_18uS_SLOT_TIMER.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH7_gc ; // On CH7 (8 or 9 pulses by TCE0) restart the counter 
+    CODEC_18uS_SLOT_TIMER.CTRLE = 0; // Normal mode - simple counter
+    CODEC_18uS_SLOT_TIMER.CCC = 148; //18.5 us
+
+
 }
 
 void SniffISO15693CodecTask(void) {
