@@ -125,6 +125,11 @@ void isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT(void);
 void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCB_VECT)(void);
 void isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 void isr_SniffISO14443_2A_CODEC_TIMER_LOADMOD_CCB_VECT(void);
+void (* volatile isr_func_TCE0_CCA_vect)(void);
+
+void (* volatile isr_func_TCD0_OVF_vect)(void);
+
+
 
 INLINE void CodecInit(void) {
     ActiveConfiguration.CodecInitFunc();
