@@ -124,6 +124,15 @@ void isr_SNIFF_ISO15693_CODEC_DEMOD_CARD_IN_INT0_VECT(void) {
     CODEC_DEMOD_IN_PORT.INT0MASK = 0;
 }
 
+/* This function is called once we have received the card SOF and 
+ * sets the corect value and interrupt in the counter
+ */
+void isr_SNIFF_ISO15693_CARD_SNIFF_PREPARE_COUNTERS(){
+    CODEC_TIMER_LOADMOD.PER = 17; // bit-frame's pulses
+    ; // First interrupt to read the time after 8 pulses
+    ; // Second interrupt to read the time after 16 pulses and compare the two value
+}
+
 /* This function is called from isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT
  * when we have 8 bits in SampleRegister and they represent an end of frame.
  */
@@ -134,25 +143,61 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
         bDualSubcarrier = 0;
     }
 
-    /* Set the period for CODEC_TIMER_SAMPLING (TCD0) to ISO15693_CARD_SAMPLE_PERIOD - 1 because PER is 0-based
-     * Every sub-bit in dual subcarrier mode is ISO15693_CARD_SAMPLE_PERIOD-long, which is 18.5 us
+    /* Now we setup the free running timer to timestamp the events on TCD0.
+     * The period is set to 300 us: on overflow we assume a NO_RESPONSE from the card (timeout).
+     * So we set an interrupt to call a function to revert the chameleon's state to sniff the reader.
+     * 
+     * The overflow should ~~never~~ be reached since the other counter will reset this timer on every
+     * bit-frame (17 pulses).
      */
-    CODEC_TIMER_SAMPLING.PER = ISO15693_CARD_SAMPLE_PERIOD - 1;
-    /* Set Counter Channel C (CCC) register with half bit period - 1 */
-    // TODO do we need a counter channel?
-    // TODO do we need to compensate ISR? Old comment included: (- 14 to compensate ISR timing overhead)
-    CODEC_TIMER_SAMPLING.CCC = ISO15693_CARD_SAMPLE_PERIOD - 1;
-    /* Sets prescaler to ISO15693_CARD_SAMPLE_CLK (4 clock cycles) for highest possible resolution */
-    CODEC_TIMER_SAMPLING.CTRLA = ISO15693_CARD_SAMPLE_CLK;
-    /* Set event action for CODEC_TIMER_SAMPLING (TCD0) to restart and trigger CODEC_TIMER_MODSTART_EVSEL = TC_EVSEL_CH0_gc = Event Channel 0 */
-    CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL; // TODO probably change event channel
-    /* Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm), the period for clock sampling is specified above */
-    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
-    /* Sets register INTCTRLB to TC_CCCINTLVL_OFF_gc = (0x00<<4) to disable compare/capture C interrupts
-     * It is now turned off in order to wait for the first pulse and start sampling once it occurs,
-     * will be enabled in isr_SNIFF_ISO15693_CODEC_DEMOD_CARD_IN_INT0_VECT
+
+    CODEC_TIMER_SAMPLING.PER = 64000; // 400 us
+    CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_DIV2_gc; 
+    CODEC_TIMER_SAMPLING.CTRLE = 0 ; // Normal 16-bit mode
+    CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH7_gc ;
+    // TODO register isr for overflow to revert to reader sniff
+
+
+    /* And now we setup the event counter on TCE0
+     * 
+     * We first have to identify the card's SOF: atm we just count 68 pulses
+     * assuming that it is a valid SOF.
+     * 
+     * Then we setup the counter to sample 8 and 16 pulses.
+     * The period is set to 17 (total number of bit-frame's pulses) to reset both the counter itself 
+     * and the free running timer.
+     * 
+     * On every 8/16 compare we trigger two different interrupt functions which save and compare the two timestamps.
+     * 
+     * We can have 3 differents cases:
+     *  T1 > T2: we receved 8 - 9 pulses -> Logical 0
+     *  T1 < T2: we receved 9 - 8 pulses -> Logical 1
+     *  T1 = T2: we could receved 8-8 or 9-9 pulses, only present in the SOF or EOF
+     * 
+     * Since we only need to reliably identify the EOF (in order to revert the demotulation to the Reader sniff)
+     * once we find two equal time, we can ~~safely~~ revert to wating reader's SOF 
+     * 
+     * USED CHANNELS:
+     * 
+     * PortB.pin0 (rising) ----CH0----> Counter
+     * Counter.overflow -------CH7----> Timer reset
+     * 
+     * The channel event 0 is already setup to signal rising edge of DEMOD data inside CodedInitCommon in Codec.h
+     * 
+     * Channel event 7 is used by the counter to reset the timer once it reaches its period (17)
      */
-    CODEC_TIMER_SAMPLING.INTCTRLB = TC_CCCINTLVL_OFF_gc;
+
+    /* Before starting decoding actual data bits, we have to consume SOF which is 68 pulses long.
+     * After the first overflow, we call a function that will set the correct values for decoding data.
+     * 
+     */
+
+    CODEC_TIMER_LOADMOD.PER = 68; // SOF's pulses
+    CODEC_TIMER_LOADMOD.CCA = 8; 
+    CODEC_TIMER_LOADMOD.CCB = 16;
+    CODEC_TIMER_LOADMOD.CTRLA = TC_EVSEL_CH0_gc;
+    CODEC_TIMER_LOADMOD.CTRLE = 0; // Normal 16-bit mode
+    EVSYS.CH7MUX = EVESYS_CHMUX_TCE0_OVF_gc;
 
     /* Start looking out for card modulation pause via interrupt. */
     /* Sets register INTFLAGS to PORT_INT0LVL_HI_gc = (0x03<<0) to enable compare/capture for high level interrupts on CODEC_DEMOD_IN_PORT (PORTB) */
@@ -169,7 +214,9 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
      * to CODEC_TIMER_SAMPLING (TCD0)'s Counter Channel C (CCC).
      * It will be used to read pulses every 18.5us
      */
-    isr_func_TCD0_CCC_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT;
+    isr_func_TCE0_CCA_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT;
+
+    //isr_func_TCD0_OVF_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT;
 
     /* Finally mark reader data as read */
     Flags.ReaderDemodFinished = 1;
