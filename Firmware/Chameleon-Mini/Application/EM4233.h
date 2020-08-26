@@ -24,16 +24,16 @@
 #define EM4233_MEM_DSFID_ADDRESS        0xD9        // DSFID byte adress
 #define EM4233_MEM_INF_ADDRESS          0xDC        // Some status bits
 
-#define EM4233_MEM_LSM_ADDRESS          0xE0        // From 0xE0   to 0x0113 - Lock status masks
+#define EM4233_MEM_LSM_ADDRESS          0xE0        // From 0xE0   to 0x0113 - Memory blocks lock status masks
 #define EM4233_MEM_PSW_ADDRESS          0x0114      // From 0x0114 to 0x0117 - 32 bit Password
 #define EM4233_MEM_KEY_ADDRESS          0x0118      // From 0x0118 to 0x0123 - 96 bit Encryption Key
 
 #define EM4233_SYSINFO_BYTE             0x0F        // == DSFID - AFI - VICC mem size - IC ref are present
 
 /* Bit masks */
-#define EM4233_MASK_READ_PROT           ( 1 << 2 )  // For lock status byte
+#define EM4233_MASK_READ_PROT           ( 1 << 2 )  // For block status byte
 #define EM4233_MASK_WRITE_PROT          ( 1 << 3 )
-#define EM4233_MASK_AFI_STATUS          ( 1 << 0 )
+#define EM4233_MASK_AFI_STATUS          ( 1 << 0 )  // For status bits
 #define EM4233_MASK_DSFID_STATUS        ( 1 << 1 )
 
 /* Custom command code */
@@ -55,7 +55,7 @@
 /* Proprietary command code */
 #define EM4233_CMD_AUTH1                0xE0
 #define EM4233_CMD_AUTH2                0xE1
-#define EM4233_CMD_GEN_READ             0xE2    // Implies some sort of singed CRC. Unknown at the moment
+#define EM4233_CMD_GEN_READ             0xE2    // Implies some sort of signed CRC. Unknown at the moment
 #define EM4233_CMD_GEN_WRITE            0xE3    // Same
 #define EM4233_CMD_LOGIN                0xE4
 

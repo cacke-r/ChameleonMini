@@ -56,6 +56,9 @@ static const MapEntryType PROGMEM ConfigurationMap[] = {
 #ifdef CONFIG_EM4233_SUPPORT
     { .Id = CONFIG_EM4233,	.Text = "EM4233" },
 #endif
+#ifdef CONFIG_ICODE_SLI_SUPPORT
+    { .Id = CONFIG_ICODE_SLI,  .Text = "ICODE_SLI" },
+#endif
 };
 
 /* Include all Codecs and Applications */
@@ -369,6 +372,24 @@ static const PROGMEM ConfigurationType ConfigurationTable[] = {
         .ApplicationSetUidFunc = EM4233SetUid,
         .UidSize = EM4233_STD_UID_SIZE,
         .MemorySize = EM4233_STD_MEM_SIZE,
+        .ReadOnly = false,
+        .TagFamily = TAG_FAMILY_ISO15693
+    },
+#endif
+#ifdef CONFIG_ICODE_SLI_SUPPORT
+    [CONFIG_ICODE_SLI] = {
+        .CodecInitFunc = ISO15693CodecInit,
+        .CodecDeInitFunc = ISO15693CodecDeInit,
+        .CodecTaskFunc = ISO15693CodecTask,
+        .ApplicationInitFunc = ICODEAppInit,
+        .ApplicationResetFunc = ICODEAppReset,
+        .ApplicationTaskFunc = ICODEAppTask,
+        .ApplicationTickFunc = ICODEAppTick,
+        .ApplicationProcessFunc = ICODEAppProcess,
+        .ApplicationGetUidFunc = ICODEGetUid,
+        .ApplicationSetUidFunc = ICODESetUid,
+        .UidSize = ICODE_STD_UID_SIZE,
+        .MemorySize = ICODE_STD_MEM_SIZE,
         .ReadOnly = false,
         .TagFamily = TAG_FAMILY_ISO15693
     },

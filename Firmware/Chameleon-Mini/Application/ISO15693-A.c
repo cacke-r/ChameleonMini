@@ -2,6 +2,9 @@
 #include "../Common.h"
 #include <util/crc16.h>
 
+CurrentFrame FrameInfo;
+uint8_t MyAFI;
+
 //Refer to ISO/IEC 15693-3:2001 page 41
 uint16_t calculateCRC(void *FrameBuf, uint16_t FrameBufSize) {
     uint16_t reg = ISO15693_CRC16_PRESET;
@@ -96,7 +99,7 @@ bool ISO15693PrepareFrame(uint8_t *FrameBuf, uint16_t FrameBytes, CurrentFrame *
 
     FrameStruct -> ParamLen = FrameBuf + (FrameBytes - ISO15693_CRC16_SIZE) - (FrameStruct -> Parameters);
 
-    /*                                                  The UID, if present, always sits right befoore the parameters */
+    /*                                                  The UID, if present, always sits right before the parameters */
     if (FrameStruct -> Addressed && !ISO15693CompareUid(FrameStruct -> Parameters - ISO15693_GENERIC_UID_SIZE, MyUid)) {
         /* addressed request but we're not the addressee */
         return false;
@@ -143,11 +146,12 @@ bool ISO15693AntiColl(uint8_t *FrameBuf, uint16_t FrameBytes, CurrentFrame *Fram
     /* Compare spare bits in mask with bits of UID */
     uint8_t BitsMask = ((1 << BitsNum) - 1); /* (1 << Bits) = 00010000   ->   (1 << Bits) - 1 = 00001111 */
     if ((MaskValue[B] & BitsMask) != (CurrentUID[B] & BitsMask)) {
-        /*  |-----------------------| Here we extract bits from the mask we received from the reader
-         *                               |------------------------| Here we extract bits from the UID
-         * The two extracted bit vectors are compared, if different then we're not the addressee.
-         * Only the latest byte of MaskValue and UID is considered.
-         */
+        /*
+        |-----------------------| Here we extract bits from the mask we received from the reader
+                                     |------------------------| Here we extract bits from the UID
+        The two extracted bit vectors are compared, if different then we're not the addressee.
+        Only the last bytes of, respectively, MaskValue and UID are considered.
+        */
         return false;
     }
 
