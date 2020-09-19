@@ -18,7 +18,7 @@
 
 
 #define ICODE_STD_UID_SIZE              ISO15693_GENERIC_UID_SIZE
-#define ICODE_STD_MEM_SIZE              0x40        // Bytes
+#define ICODE_STD_MEM_SIZE              0x20        // Bytes
 #define ICODE_BYTES_PER_BLCK            0x04
 #define ICODE_BLCKS_PER_PAGE            0x04
 #define ICODE_NUMBER_OF_BLCKS           ( ICODE_STD_MEM_SIZE / ICODE_BYTES_PER_BLCK )
