@@ -397,6 +397,7 @@ CommandStatusIdType CommandGetSysTick(char *OutParam) {
     return COMMAND_INFO_OK_WITH_TEXT_ID;
 }
 
+#ifdef CONFIG_ISO14443A_READER_SUPPORT
 CommandStatusIdType CommandExecParamSend(char *OutMessage, const char *InParams) {
     if (GlobalSettings.ActiveSettingPtr->Configuration != CONFIG_ISO14443A_READER)
         return COMMAND_ERR_INVALID_USAGE_ID;
@@ -522,6 +523,7 @@ CommandStatusIdType CommandExecIdentifyCard(char *OutMessage) {
     CommandLinePendingTaskTimeout = &Reader14443AAppTimeout;
     return TIMEOUT_COMMAND;
 }
+#endif
 
 CommandStatusIdType CommandGetTimeout(char *OutParam) {
     snprintf_P(OutParam, TERMINAL_BUFFER_SIZE, PSTR("%u ms"), GlobalSettings.ActiveSettingPtr->PendingTaskTimeout * 100);
@@ -586,6 +588,7 @@ CommandStatusIdType CommandGetField(char *OutMessage) {
 
 
 CommandStatusIdType CommandExecAutocalibrate(char *OutMessage) {
+#ifdef CONFIG_ISO14443A_READER_SUPPORT
     if (GlobalSettings.ActiveSettingPtr->Configuration == CONFIG_ISO14443A_READER) {
         ApplicationReset();
 
@@ -594,19 +597,22 @@ CommandStatusIdType CommandExecAutocalibrate(char *OutMessage) {
         Reader14443ACodecStart();
         CommandLinePendingTaskTimeout = &Reader14443AAppTimeout;
         return TIMEOUT_COMMAND;
-    } else if (GlobalSettings.ActiveSettingPtr->Configuration == CONFIG_ISO14443A_SNIFF) {
+    }
+#endif
+#ifdef CONFIG_ISO14443A_SNIFF_SUPPORT
+    if (GlobalSettings.ActiveSettingPtr->Configuration == CONFIG_ISO14443A_SNIFF) {
         ApplicationReset();
 
         Sniff14443CurrentCommand = Sniff14443_Autocalibrate;
         Sniff14443AAppInit();
         CommandLinePendingTaskTimeout = &Sniff14443AAppTimeout;
         return TIMEOUT_COMMAND;
-    } else {
-        return COMMAND_ERR_INVALID_USAGE_ID;
     }
-
+#endif
+    return COMMAND_ERR_INVALID_USAGE_ID;
 }
 
+#ifdef CONFIG_ISO14443A_READER_SUPPORT
 CommandStatusIdType CommandExecClone(char *OutMessage) {
     ConfigurationSetById(CONFIG_ISO14443A_READER);
 
@@ -619,3 +625,6 @@ CommandStatusIdType CommandExecClone(char *OutMessage) {
 
     return TIMEOUT_COMMAND;
 }
+
+#endif
+
