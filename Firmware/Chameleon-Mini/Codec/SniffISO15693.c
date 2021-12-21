@@ -197,7 +197,7 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
     CODEC_TIMER_LOADMOD.CCB = 16;
     CODEC_TIMER_LOADMOD.CTRLA = TC_EVSEL_CH0_gc;
     CODEC_TIMER_LOADMOD.CTRLE = 0; // Normal 16-bit mode
-    EVSYS.CH7MUX = EVESYS_CHMUX_TCE0_OVF_gc;
+    EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_OVF_gc;
 
     /* Start looking out for card modulation pause via interrupt. */
     /* Sets register INTFLAGS to PORT_INT0LVL_HI_gc = (0x03<<0) to enable compare/capture for high level interrupts on CODEC_DEMOD_IN_PORT (PORTB) */
