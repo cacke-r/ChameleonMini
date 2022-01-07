@@ -76,6 +76,8 @@ static volatile uint8_t CardSOCBitsCount;
  */
 static volatile uint8_t CardSOCBytesCounter;
 
+ISR_SHARED SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void);
+
 /* This function implements CODEC_DEMOD_IN_INT0_VECT interrupt vector.
  * It is called when a pulse is detected in CODEC_DEMOD_IN_PORT (PORTB).
  * The relevatn interrupt vector is registered to CODEC_DEMOD_IN_MASK0 (PIN1) via:
@@ -83,7 +85,7 @@ static volatile uint8_t CardSOCBytesCounter;
  * and unregistered writing the INT0MASK to 0
  */
 // ISR(CODEC_DEMOD_IN_INT0_VECT)
-void isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT(void) {
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT(void) {
     /* Start sample timer CODEC_TIMER_SAMPLING (TCD0).
      * Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm),
      * the period for clock sampling is specified in StartSniffISO15693Demod.
@@ -99,15 +101,50 @@ void isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT(void) {
 /* This is a test function to check if interrupts work 
  * Performs action on every 18.5us
  */
-void isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
+ISR_SHARED isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
     LEDHook(LED_CODEC_RX, LED_PULSE);
+    if(Flags.CardDemodFinished == 0){
+        if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_OVF_gc) {
+            EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCA_gc;
+        } else if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_CCA_gc) {
+            EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCB_gc;
+        } else if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_CCB_gc) {
+            EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCA_gc;
+        }
+
+       /* All this logic is not working */
+       /* So just reverting back to Reader sniffing */
+        CODEC_TIMER_TIMESTAMPS.CTRLA = 0;
+        isr_func_TCD0_CCC_vect = &SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT;
+        CODEC_TIMER_SAMPLING.CTRLA = ISO15693_READER_SAMPLE_CLK;
+        CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
+        CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
+
+        Flags.CardDemodFinished = 1;
+
+        CODEC_TIMER_LOADMOD.CNT = 0;
+        CODEC_TIMER_SAMPLING.CNT = 0;
+        CODEC_TIMER_TIMESTAMPS.CNT = 0;
+    }
+}
+
+ISR_SHARED isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_OVF(void){
+
+
+    CODEC_TIMER_SAMPLING.INTCTRLA = 0;
+    isr_func_TCD0_CCC_vect = &SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT;
+    CODEC_TIMER_SAMPLING.CTRLA = ISO15693_READER_SAMPLE_CLK;
+    CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
+    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
+
+    Flags.CardDemodFinished = 1;
 }
 
 
 /* This is a test function to check if interrupts work 
  * It waits until a pulse is detected and then enables timers/counters
  */
-void isr_SNIFF_ISO15693_CODEC_DEMOD_CARD_IN_INT0_VECT(void) {
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_DEMOD_CARD_IN_INT0_VECT(void) {
     // TODO timeout and disable interrupts if no data is sent from the card
     // TODO we might need to set here the pulse counter to 1 because the first pulse could be missed
     
@@ -150,13 +187,16 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
      * The overflow should ~~never~~ be reached since the other counter will reset this timer on every
      * bit-frame (17 pulses).
      */
-
+    CODEC_TIMER_SAMPLING.CNT = 0;
     CODEC_TIMER_SAMPLING.PER = 64000; // 400 us
     CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_DIV2_gc; 
     CODEC_TIMER_SAMPLING.CTRLE = 0 ; // Normal 16-bit mode
     CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH7_gc ;
     // TODO register isr for overflow to revert to reader sniff
-
+    /* ENable Overflow IRQ */
+    CODEC_TIMER_SAMPLING.CNT = 0;
+    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_OVFIF_bm;
+    CODEC_TIMER_SAMPLING.INTCTRLA = TC_OVFINTLVL_HI_gc;
 
     /* And now we setup the event counter on TCE0
      * 
@@ -214,10 +254,9 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
      * to CODEC_TIMER_SAMPLING (TCD0)'s Counter Channel C (CCC).
      * It will be used to read pulses every 18.5us
      */
-    isr_func_TCE0_CCA_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT;
-
-    //isr_func_TCD0_OVF_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT;
-
+     // isr_func_TCE0_CCA_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT;
+    isr_func_TCD0_OVF_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_OVF;
+    isr_func_TCD0_CCC_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT;
     /* Finally mark reader data as read */
     Flags.ReaderDemodFinished = 1;
 }
@@ -230,7 +269,7 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
  * It disables its own interrupt when receives an EOF (calling ISO15693_EOC) or when it receives garbage
  */
 // ISR(CODEC_TIMER_SAMPLING_CCC_VECT) // Reading data sent from the reader
-void SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
+ISR_SHARED SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
     /* Shift demod data */
     SampleRegister = (SampleRegister << 1) | (!(CODEC_DEMOD_IN_PORT.IN & CODEC_DEMOD_IN_MASK) ? 0x01 : 0x00);
 
@@ -247,6 +286,7 @@ void SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
                     SampleDataCount = 0;
                 } else { // No SOC. Restart and try again, we probably received garbage.
                     Flags.ReaderDemodFinished = 1;
+                    Flags.CardDemodFinished = 1;
                     /* Sets timer off for CODEC_TIMER_SAMPLING (TCD0) disabling clock source */
                     CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_OFF_gc;
                     /* Sets register INTCTRLB to 0 to disable all compare/capture interrupts */
@@ -445,6 +485,22 @@ void SniffISO15693CodecDeInit(void) {
     CodecSetDemodPower(false);
 }
 
+
+void DebugPrintTimerRegs(void){
+
+    char log_text[100];
+    log_text[99] = '\0';
+    snprintf(log_text, 99, "CODEC_TIMER_LOADMOD.CNT=%d", CODEC_TIMER_LOADMOD.CNT);
+    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
+    snprintf(log_text, 99, "CODEC_TIMER_LOADMOD.PER=%d", CODEC_TIMER_LOADMOD.PER);
+    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
+    snprintf(log_text, 99, "CODEC_TIMER_SAMPLING.CNT=%d", CODEC_TIMER_SAMPLING.CNT);
+    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
+    snprintf(log_text, 99, "CODEC_TIMER_SAMPLING.PER=%d", CODEC_TIMER_SAMPLING.PER);
+    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
+
+}
+
 void SniffISO15693CodecTask(void) {
     if (Flags.ReaderDemodFinished) {
         
@@ -465,8 +521,13 @@ void SniffISO15693CodecTask(void) {
             }
             // TODO enable card demodulation
             // TODO set DemodState as DEMOD_SOC_STATE
+
         }
 
+    }
+
+    if(Flags.CardDemodFinished) {
+        Flags.CardDemodFinished = 0;
         StartSniffISO15693Demod();
     }
 }
