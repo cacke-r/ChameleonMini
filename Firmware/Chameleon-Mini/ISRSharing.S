@@ -30,3 +30,8 @@ CODEC_DEMOD_IN_INT0_VECT:
 .global CODEC_TIMER_SAMPLING_CCC_VECT
 CODEC_TIMER_SAMPLING_CCC_VECT:
     call_isr isr_func_TCD0_CCC_vect
+
+; Detect no communication from card
+.global CODEC_TIMER_SAMPLING_OVF_VECT
+CODEC_TIMER_SAMPLING_OVF_VECT:
+    call_isr isr_func_TCD0_OVF_vect
