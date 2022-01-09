@@ -130,9 +130,6 @@ void isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 void isr_SniffISO14443_2A_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 extern void (* volatile isr_func_TCE0_CCA_vect)(void); // TODO_sniff does this have to be shared? It is not used at this point
 
-extern void (* volatile isr_func_TCD0_OVF_vect)(void); // TODO_sniff does this have to be shared? I see only one usage
-void isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_OVF(void);
-
 
 INLINE void CodecInit(void) {
     ActiveConfiguration.CodecInitFunc();

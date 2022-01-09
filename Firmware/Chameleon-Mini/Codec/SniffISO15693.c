@@ -233,8 +233,8 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
     CODEC_TIMER_SAMPLING.CNT = 0;
     CODEC_TIMER_SAMPLING.INTFLAGS = TC0_OVFIF_bm; /* Register overflow handler to revert to reader sniff (card did not answer) */
     CODEC_TIMER_SAMPLING.INTCTRLA = TC_OVFINTLVL_HI_gc;
+    /* Overflow ISR is registered below */
 
-    isr_func_TCD0_OVF_vect = &isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_OVF;
     /* Finally mark reader data as read */
     Flags.ReaderDemodFinished = 1;
 }
@@ -244,7 +244,7 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
  * the first card modulation pulse, this interrupt is called when the card does
  * not answer the reader. It then reinits the chameleon to sniff reader data.
  */
-ISR_SHARED isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_OVF(void) {
+ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
     CODEC_TIMER_SAMPLING.INTCTRLA = 0;
     isr_func_TCD0_CCC_vect = &SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT;
     CODEC_TIMER_SAMPLING.CTRLA = ISO15693_READER_SAMPLE_CLK;
