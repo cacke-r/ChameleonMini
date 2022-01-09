@@ -156,6 +156,13 @@ const PROGMEM CommandEntryType CommandTable[] = {
         .GetFunc    = CommandGetLedRed
     },
     {
+        .Command    = COMMAND_PIN,
+        .ExecFunc   = NO_FUNCTION,
+        .ExecParamFunc = NO_FUNCTION,
+        .SetFunc    = CommandSetPin,
+        .GetFunc    = CommandGetPin
+    },
+    {
         .Command    = COMMAND_LOGMODE,
         .ExecFunc   = NO_FUNCTION,
         .ExecParamFunc = NO_FUNCTION,
@@ -327,6 +334,12 @@ const PROGMEM CommandEntryType CommandTable[] = {
         .GetFunc        = NO_FUNCTION
     },
 #endif
+    #ifdef ENABLE_RUNTESTS_TERMINAL_COMMAND
+    #include "../Tests/ChameleonTerminalInclude.c"
+    #endif
+    #if defined(CONFIG_MF_DESFIRE_SUPPORT) && !defined(DISABLE_DESFIRE_TERMINAL_COMMANDS)
+    #include "../Application/DESFire/DESFireChameleonTerminalInclude.c"
+    #endif
     {
         /* This has to be last element */
         .Command    = COMMAND_LIST_END,
@@ -357,7 +370,7 @@ static const CommandStatusType PROGMEM StatusTable[] = {
     STATUS_TABLE_ENTRY(COMMAND_ERR_TIMEOUT_ID, COMMAND_ERR_TIMEOUT),
 };
 
-static uint16_t BufferIdx;
+uint16_t TerminalBufferIdx = 0;
 
 void (*CommandLinePendingTaskTimeout)(void) = NO_FUNCTION;  // gets called on Timeout
 static bool TaskPending = false;
@@ -473,7 +486,7 @@ static void DecodeCommand(void) {
 }
 
 void CommandLineInit(void) {
-    BufferIdx = 0;
+    TerminalBufferIdx = 0;
 }
 
 bool CommandLineProcessByte(uint8_t Byte) {
@@ -484,24 +497,24 @@ bool CommandLineProcessByte(uint8_t Byte) {
         }
 
         /* Prevent buffer overflow and account for '\0' */
-        if (BufferIdx < TERMINAL_BUFFER_SIZE - 1) {
-            TerminalBuffer[BufferIdx++] = Byte;
+        if (TerminalBufferIdx < TERMINAL_BUFFER_SIZE - 1) {
+            TerminalBuffer[TerminalBufferIdx++] = Byte;
         }
     } else if (Byte == '\r') {
         /* Process on \r. Terminate string and decode. */
-        TerminalBuffer[BufferIdx] = '\0';
-        BufferIdx = 0;
+        TerminalBuffer[TerminalBufferIdx] = '\0';
+        TerminalBufferIdx = 0;
 
         if (!TaskPending)
             DecodeCommand();
     } else if (Byte == '\b') {
         /* Backspace. Delete last character in buffer. */
-        if (BufferIdx > 0) {
-            BufferIdx--;
+        if (TerminalBufferIdx > 0) {
+            TerminalBufferIdx--;
         }
     } else if (Byte == 0x1B) {
         /* Drop buffer on escape */
-        BufferIdx = 0;
+        TerminalBufferIdx = 0;
     } else {
         /* Ignore other chars */
     }

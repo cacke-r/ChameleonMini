@@ -19,7 +19,9 @@
 #include "Vicinity.h"
 #include "Sl2s2002.h"
 #include "TITagitstandard.h"
+#include "TITagitplus.h"
 #include "Sniff14443A.h"
+#include "NTAG215.h"
 #include "EM4233.h"
 #include "Sniff15693.h"
 

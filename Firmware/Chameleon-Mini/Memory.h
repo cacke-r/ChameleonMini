@@ -16,10 +16,11 @@
 #include "Common.h"
 
 void MemoryInit(void);
-void MemoryReadBlock(void *Buffer, uint16_t Address, uint16_t ByteCount);
-void MemoryWriteBlock(const void *Buffer, uint16_t Address, uint16_t ByteCount);
+void MemoryReadBlock(void* Buffer, uint16_t Address, uint16_t ByteCount);
+void MemoryReadBlockInSetting(void* Buffer, uint16_t Address, uint16_t ByteCount);
+void MemoryWriteBlock(const void* Buffer, uint16_t Address, uint16_t ByteCount);
+void MemoryWriteBlockInSetting(const void* Buffer, uint16_t Address, uint16_t ByteCount);
 void MemoryClear(void);
-
 
 void MemoryRecall(void);
 void MemoryStore(void);

@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "Map.h"
+
 #define CONFIGURATION_NAME_LENGTH_MAX   32
 #define CONFIGURATION_UID_SIZE_MAX      16
 
@@ -47,6 +49,9 @@ typedef enum  {
 #ifdef CONFIG_ISO14443A_READER_SUPPORT
     CONFIG_ISO14443A_READER,
 #endif
+#ifdef CONFIG_NTAG215_SUPPORT
+    CONFIG_NTAG215,
+#endif
 #ifdef CONFIG_VICINITY_SUPPORT
     CONFIG_VICINITY,
 #endif
@@ -59,8 +64,14 @@ typedef enum  {
 #ifdef CONFIG_TITAGITSTANDARD_SUPPORT
     CONFIG_TITAGITSTANDARD,
 #endif
+#ifdef CONFIG_TITAGITPLUS_SUPPORT
+    CONFIG_TITAGITPLUS,
+#endif
 #ifdef CONFIG_EM4233_SUPPORT
     CONFIG_EM4233,
+#endif
+#ifdef CONFIG_MF_DESFIRE_SUPPORT
+    CONFIG_MF_DESFIRE,
 #endif
     /* This HAS to be the last element */
     CONFIG_COUNT
@@ -161,6 +172,7 @@ extern ConfigurationType ActiveConfiguration;
 
 void ConfigurationInit(void);
 void ConfigurationSetById(ConfigurationEnum Configuration);
+MapIdType ConfigurationCheckByName(const char *Configuration);
 void ConfigurationGetByName(char *Configuration, uint16_t BufferSize);
 bool ConfigurationSetByName(const char *Configuration);
 void ConfigurationGetList(char *ConfigurationList, uint16_t BufferSize);

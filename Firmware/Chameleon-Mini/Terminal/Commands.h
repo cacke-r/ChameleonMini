@@ -113,6 +113,10 @@ CommandStatusIdType CommandSetLedGreen(char *OutMessage, const char *InParam);
 CommandStatusIdType CommandGetLedRed(char *OutParam);
 CommandStatusIdType CommandSetLedRed(char *OutMessage, const char *InParam);
 
+#define COMMAND_PIN         "PIN"
+CommandStatusIdType CommandGetPin(char *OutParam);
+CommandStatusIdType CommandSetPin(char *OutMessage, const char *InParam);
+
 #define COMMAND_LOGMODE     "LOGMODE"
 CommandStatusIdType CommandGetLogMode(char *OutParam);
 CommandStatusIdType CommandSetLogMode(char *OutMessage, const char *InParam);
@@ -189,6 +193,14 @@ CommandStatusIdType CommandGetField(char *OutMessage);
 
 #define COMMAND_CLONE  "CLONE"
 CommandStatusIdType CommandExecClone(char *OutMessage);
+
+#ifdef ENABLE_RUNTESTS_TERMINAL_COMMAND
+    #include "../Tests/ChameleonTerminal.h"
+#endif
+
+#if defined(CONFIG_MF_DESFIRE_SUPPORT) && !defined(DISABLE_DESFIRE_TERMINAL_COMMANDS)
+     #include "../Application/DESFire/DESFireChameleonTerminal.h"
+#endif
 
 #define COMMAND_LIST_END    ""
 /* Defines the end of command list. This is no actual command */
