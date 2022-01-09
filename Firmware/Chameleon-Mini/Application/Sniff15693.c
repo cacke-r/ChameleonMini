@@ -5,6 +5,8 @@
  *      Author: ceres-c & MrMoDDoM
  */
 
+#ifdef CONFIG_ISO15693_SNIFF_SUPPORT
+
 #include "../Codec/SniffISO15693.h"
 #include "Sniff15693.h"
 
@@ -33,4 +35,4 @@ uint16_t SniffISO15693AppProcess(uint8_t* FrameBuf, uint16_t FrameBytes)
     return 0; // TODO: create a proper Sniff Application 
 }
 
-
+#endif /* CONFIG_ISO15693_SNIFF_SUPPORT */
