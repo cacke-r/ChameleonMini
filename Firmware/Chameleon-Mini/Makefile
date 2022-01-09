@@ -207,7 +207,7 @@ AVRDUDE_FLAGS = -p $(AVRDUDE_MCU) -P $(AVRDUDE_PORT) -c $(AVRDUDE_PROGRAMMER)
 AVRDUDE_WRITE_APP_LATEST = -U application:w:Latest/Chameleon-Mini.hex
 AVRDUDE_WRITE_EEPROM_LATEST = -U eeprom:w:Latest/Chameleon-Mini.eep
 
-.PHONY: program program-latest dfu-flip dfu-prog check_size style
+.PHONY: program program-latest dfu-flip dfu-prog dfu-reset check_size style
 
 # Default target
 all:
@@ -257,6 +257,10 @@ dfu-prog: $(TARGET).hex $(TARGET).eep check_size
 	dfu-programmer $(MCU) erase
 	dfu-programmer $(MCU) flash-eeprom $(TARGET).eep
 	dfu-programmer $(MCU) flash $(TARGET).hex
+	dfu-programmer $(MCU) reset
+
+# Reset the device after firmware upgrade
+dfu-reset:
 	dfu-programmer $(MCU) reset
 
 check_size:
