@@ -6,14 +6,12 @@
  */
 
 #include "SniffISO15693.h"
+#include "Codec.h"
 #include "../System.h"
 #include "../Application/Application.h"
 #include "LEDHook.h"
 #include "AntennaLevel.h"
 #include "Terminal/Terminal.h"
-#include <util/delay.h>
-#include <avr/interrupt.h>
-#include <avr/io.h>
 
 
 #define SOC_1_OF_4_CODE         0x7B
@@ -76,11 +74,12 @@ static volatile uint8_t CardSOCBitsCount;
  */
 static volatile uint8_t CardSOCBytesCounter;
 
+INLINE void SNIFF_ISO15693_READER_EOC_VCD(void);
+INLINE void CardSniffInit(void);
+
 /////////////////////////////////////////////////
 // VCD->VICC
 /////////////////////////////////////////////////
-
-INLINE void SNIFF_ISO15693_READER_EOC_VCD(void);
 
 /* This function implements CODEC_DEMOD_IN_INT0_VECT interrupt vector.
  * It is called when a pulse is detected in CODEC_DEMOD_IN_PORT (PORTB).
@@ -237,6 +236,9 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
 
     /* Finally mark reader data as read */
     Flags.ReaderDemodFinished = 1;
+
+    /* And initialize VICC->VCD sniffer */
+    CardSniffInit(); // TODO_sniff can this be moved to CodecTask or would it be too slow and we'd loose some bits?
 }
 
 /* This function is registered to CODEC_TIMER_SAMPLING (TCD0)'s period overflow
@@ -258,77 +260,179 @@ ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
 // VICC->VCD
 /////////////////////////////////////////////////
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/* This is a test function to check if interrupts work
- * Performs action on every 18.5us
+/* Currently implemented only single subcarrier SOF detection
+ * TODO extract to single subcarrier specific function and call this or double subcarrier
  */
-ISR_SHARED isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
-    LEDHook(LED_CODEC_RX, LED_PULSE);
-    if(Flags.CardDemodFinished == 0){
-        if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_OVF_gc) {
-            EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCA_gc;
-        } else if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_CCA_gc) {
-            EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCB_gc;
-        } else if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_CCB_gc) {
-            EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCA_gc;
-        }
+INLINE void CardSniffInit(void) {
+    DACB.CH0DATA = 16*50; // TODO sniff remove this forced threshold, identifiy a value automatically
 
-       /* All this logic is not working */
-       /* So just reverting back to Reader sniffing */
-        CODEC_TIMER_TIMESTAMPS.CTRLA = 0;
-        isr_func_TCD0_CCC_vect = &SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT;
-        CODEC_TIMER_SAMPLING.CTRLA = ISO15693_READER_SAMPLE_CLK;
-        CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
-        CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
+    /* Enable the analog comparator AC interrupt */
+    ACA.AC1CTRL = 0; // TODO_sniff why resetting AC1 CTRL? We're not using it
+    ACA.STATUS = AC_AC0IF_bm; /* Analog Comparator 0 Interrupt Flag bit mask. */
+    /* enable AC | high speed mode | no hysteresis | sample on rising edge | interrupt level high */
+    ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_NO_gc | AC_INTMODE_RISING_gc | AC_INTLVL_HI_gc;
 
-        Flags.CardDemodFinished = 1;
+    /* Use the event system for resetting the pause-detecting timer CODEC_TIMER_LOADMOD (TCE0). */
+    EVSYS.CH2MUX = EVSYS_CHMUX_ACA_CH0_gc; // on every ACA_AC0 INT
+    EVSYS.CH2CTRL = EVSYS_DIGFILT_1SAMPLE_gc;
 
-        CODEC_TIMER_LOADMOD.CNT = 0;
-        CODEC_TIMER_SAMPLING.CNT = 0;
-        CODEC_TIMER_TIMESTAMPS.CNT = 0;
-    }
-}
-
-
-/* This is a test function to check if interrupts work 
- * It waits until a pulse is detected and then enables timers/counters
- */
-ISR_SHARED isr_SNIFF_ISO15693_CODEC_DEMOD_CARD_IN_INT0_VECT(void) {
-    // TODO timeout and disable interrupts if no data is sent from the card
-    // TODO we might need to set here the pulse counter to 1 because the first pulse could be missed
-
-    /* Start sample timer CODEC_TIMER_SAMPLING (TCD0).
-     * Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm),
-     * the period for clock sampling is specified in SNIFF_ISO15693_READER_EOC_VCD.
+    /**
+     * CODEC_TIMER_TIMESTAMPS (TCD1) will be used to count the peaks identified by ACA while sniffing VICC data
      */
-    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
-    /* Sets register INTCTRLB to TC_CCCINTLVL_HI_gc = (0x03<<4) to enable compare/capture for high level interrupts on Channel C (CCC) */
-    CODEC_TIMER_SAMPLING.INTCTRLB = TC_CCCINTLVL_HI_gc;
+    CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
+    CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear counter */ // TODO clear this counter if we happen to find some interference before actually hitting the SOF
+    CODEC_TIMER_TIMESTAMPS.PER = 0xFFFF; /* Don't limit this value, will be cleared manually */
+    CODEC_TIMER_TIMESTAMPS.CCB = 0xFFFF; /* Don't limit this value, will be cleared manually */
+    CODEC_TIMER_TIMESTAMPS.INTCTRLA = 0; /* No error/overflow interrupt */
+    // CODEC_TIMER_TIMESTAMPS.INTFLAGS = TC1_CCBIF_bm; // Clear interrupt flag // TODO_sniff we don't need interrupts on this counter, right?
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCBINTLVL_HI_gc; /* Register to high interrupt level */
 
-    /* Disable this interrupt as we've already sensed the relevant pulse and will use our internal clock from now on */
-    CODEC_DEMOD_IN_PORT.INT0MASK = 0;
+    /**
+     * CODEC_TIMER_LOADMOD (TCE0) will be used to identify the pause in SOF when in single subcarrier mode
+     * SOF: 0000000000000000000000001111111111111111111111110000000011111111
+     *                                 |rrrrrrrrrrrrrrrrrrrrO|
+     *                                 |                    The timer will overflow here because modulations stopped
+     *                                 |                    and it was not reset. We can start the 18,88 us half-bit timer.
+     *                                 |
+     *                                 We start catching modulations somewhere around here and enable this timer.
+     *                                 Every modulation resets this timer
+     */
+    CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_DIV1_gc; /* Clocked at 27.12 MHz */
+    CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH2_gc; /* Restart this timer on every event on channel 2 (pulse detected by AC) */
+    CODEC_TIMER_LOADMOD.CNT = 0; /* Clear counter */
+    CODEC_TIMER_LOADMOD.PER = 0xffff; /* Stupid high value because we're going to use CCB. CCB is already shared and won't conflict with other codecs */
+    CODEC_TIMER_LOADMOD.CCB = 64; /* Given clock = 27.12 MHz, this is exactly the duration of 1 pulse at f_c/32 */
+    CODEC_TIMER_LOADMOD.INTCTRLA = 0; /* No error/overflow interrupt */
+    // TODO_sniff we could use an interrupt on overflow, but our ISR has to cooperate with other codecs which might overflow this counter as well
+    CODEC_TIMER_LOADMOD.INTFLAGS = TC1_CCBIF_bm; /* Register interrupt to Compare/Capture channel B */
+    /* Interrupt will be enabled later, writing INTFLAGS register, when we're done sensing data from VCD */
+
 }
+
+INLINE void CardSniffDeinit(void) {
+    // Reset ACA AC0 to default setting
+    ACA.AC0MUXCTRL = AC_MUXPOS_DAC_gc | AC_MUXNEG_PIN7_gc;
+    ACA.AC0CTRL = CODEC_AC_DEMOD_SETTINGS;
+
+    // TODO disable evenst system
+
+    // TODO disable all other interrupts
+}
+
+// This interrupt waits for Card -> Reader SOC
+ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) { // this interrupt either finds the SOC or gets triggered before
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    /* TODO peak threshold finding idea:
+     *  - get "silence" level during the pause after we reader EOC
+     *  - set silence*3 (or appropriate value) as ACA threshold
+     * Then use event routing system to automatically update this value:
+     *  - on n-th ACA hit, trigger ADC sampling => will fetch the most recent "high" value  (check if we have enough clock cycles)
+     *  - when ADC is done sampling, trigger ADC ISR to multiply that value by 0,5 and save it as ACA threshold
+    */
+
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_HI_gc; /* Actually enable CCB interrupt (handled by isr_func_CODEC_TIMER_LOADMOD_CCB_VECT) */
+
+    ACA.AC0CTRL &= ~AC_INTLVL_HI_gc; /* Disable this interrupt */
+
+    // TODO_sniff re-enable this interrupt somewhere else if no SOF match after this interrupt signals it as theoretically found (false positive)
+
+    // TODO to use AC as pulse counter:
+    //  1) change event trigger to falling edge (currently using raising edge)
+    //  2) route this to source a counter (or set it to 1 if already routed). Better to have it already routed so we can count this pulse as well.
+
+    // TODO stop TCD0 or disable overflow interrupt (we have found a SOF)
+}
+
+/**
+ * Find the modulation pause inside VICC->VCD SOF when in single subcarrier
+ * SOF: 0000000000000000000000001111111111111111111111110000000011111111
+ *                                                      ^
+ *                                                      We're here in the SOF now
+ * Actually we're late by 64 clock cycles from the latest pulse due to CCB = 64.
+ * TODO We should account for those lost 64 cycles setting the CNT value for the next interrupt accordingly
+ */
+ISR_SHARED isr_SNIFF_ISO15693_SOF_SSC_PAUSE(void) { // Registered to CODEC_TIMER_LOADMOD CCB
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
+    // TODO this value now contains the number of received pulses (if a proper threshold has been set). Use it.
+    CODEC_TIMER_TIMESTAMPS.CNT; // TODO there are some fluctuations in this value, 24 < CNT < 26. Probably due to threshold identification
+
+    // TODO:
+    //  1) start the 18,88us timer (account for 64 lost cycles)
+    //  2) Check and clear CODEC_TIMER_TIMESTAMPS.CNT
+    //  3) Set codec demod status to SSC_SOF
+    //  4) Start actual demod (skipping first bit which is still part of the SOF)
+
+    /* Disable this interrupt */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCDINTLVL_OFF_gc;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// /* This is a test function to check if interrupts work
+//  * Performs action on every 18.5us
+//  */
+// ISR_SHARED isr_SNIFF_ISO15693_CARD_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
+//     LEDHook(LED_CODEC_RX, LED_PULSE);
+//     if(Flags.CardDemodFinished == 0){
+//         if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_OVF_gc) {
+//             EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCA_gc;
+//         } else if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_CCA_gc) {
+//             EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCB_gc;
+//         } else if (EVSYS.CH7MUX == EVSYS_CHMUX_TCE0_CCB_gc) {
+//             EVSYS.CH7MUX = EVSYS_CHMUX_TCE0_CCA_gc;
+//         }
+
+//        /* All this logic is not working */
+//        /* So just reverting back to Reader sniffing */
+//         CODEC_TIMER_TIMESTAMPS.CTRLA = 0;
+//         isr_func_TCD0_CCC_vect = &SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT;
+//         CODEC_TIMER_SAMPLING.CTRLA = ISO15693_READER_SAMPLE_CLK;
+//         CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
+//         CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
+
+//         Flags.CardDemodFinished = 1;
+
+//         CODEC_TIMER_LOADMOD.CNT = 0;
+//         CODEC_TIMER_SAMPLING.CNT = 0;
+//         CODEC_TIMER_TIMESTAMPS.CNT = 0;
+//     }
+// }
+
+
+// /* This is a test function to check if interrupts work 
+//  * It waits until a pulse is detected and then enables timers/counters
+//  */
+// ISR_SHARED isr_SNIFF_ISO15693_CODEC_DEMOD_CARD_IN_INT0_VECT(void) {
+//     // TODO timeout and disable interrupts if no data is sent from the card
+//     // TODO we might need to set here the pulse counter to 1 because the first pulse could be missed
+
+//     /* Start sample timer CODEC_TIMER_SAMPLING (TCD0).
+//      * Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm),
+//      * the period for clock sampling is specified in SNIFF_ISO15693_READER_EOC_VCD.
+//      */
+//     CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
+//     /* Sets register INTCTRLB to TC_CCCINTLVL_HI_gc = (0x03<<4) to enable compare/capture for high level interrupts on Channel C (CCC) */
+//     CODEC_TIMER_SAMPLING.INTCTRLB = TC_CCCINTLVL_HI_gc;
+
+//     /* Disable this interrupt as we've already sensed the relevant pulse and will use our internal clock from now on */
+//     CODEC_DEMOD_IN_PORT.INT0MASK = 0;
+// }
 
 /* This function is called once we have received the card SOF and
  * sets the corect value and interrupt in the counter
@@ -403,9 +507,17 @@ void StartSniffISO15693Demod(void) {
 }
 
 void SniffISO15693CodecInit(void) {
+    // TODO_sniff temp code start
     PORTE.DIR = PIN0_bm;
+    CodecThresholdReset(); // TODO_sniff do we need this?
+    isr_func_ACA_AC0_vect = &isr_SNIFF_ISO15693_ACA_AC0_VECT; // TODO move to SSC Card init
+
+    isr_func_CODEC_TIMER_LOADMOD_CCB_VECT = &isr_SNIFF_ISO15693_SOF_SSC_PAUSE; // Pause finder in SOC // TODO move to SSC init
+    // TODO_sniff temp code end
+
     CodecInitCommon();
 
+    // TODO move below code to Reader init
     /* Register isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT function
      * to CODEC_TIMER_SAMPLING (TCD0)'s Counter Channel C (CCC)
      */
