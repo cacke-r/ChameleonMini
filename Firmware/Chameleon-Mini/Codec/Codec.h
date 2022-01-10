@@ -128,8 +128,8 @@ void isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT(void);
 extern void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCB_VECT)(void);
 void isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 void isr_SniffISO14443_2A_CODEC_TIMER_LOADMOD_CCB_VECT(void);
+extern void (* volatile isr_func_ACA_AC0_vect)(void); // TODO_sniff does this have to be shared? It is not used at this point
 extern void (* volatile isr_func_TCE0_CCA_vect)(void); // TODO_sniff does this have to be shared? It is not used at this point
-
 
 INLINE void CodecInit(void) {
     ActiveConfiguration.CodecInitFunc();
