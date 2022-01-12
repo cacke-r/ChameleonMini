@@ -207,7 +207,7 @@ AVRDUDE_FLAGS = -p $(AVRDUDE_MCU) -P $(AVRDUDE_PORT) -c $(AVRDUDE_PROGRAMMER)
 AVRDUDE_WRITE_APP_LATEST = -U application:w:Latest/Chameleon-Mini.hex
 AVRDUDE_WRITE_EEPROM_LATEST = -U eeprom:w:Latest/Chameleon-Mini.eep
 
-.PHONY: program program-latest dfu-flip dfu-prog dfu-reset check_size style
+.PHONY: program program-latest dfu-flip dfu-prog dfu-reset check_size style export_cproj_list
 
 # Default target
 all:
@@ -277,6 +277,7 @@ check_size:
 	fi; \
 	}
 
+
 style:
 	# Make sure astyle is installed
 	@which astyle >/dev/null || ( echo "Please install 'astyle' package first" ; exit 1 )
@@ -302,4 +303,67 @@ desfire: local-clean $(TARGET).elf $(TARGET).hex $(TARGET).eep
 	@cp $(TARGET).hex $(TARGET)-DESFire.hex
 	@cp $(TARGET).eep $(TARGET)-DESFire.eep
 	@avr-size $(TARGET).elf
+
+
+
+export_cproj_list:
+	@echo "######################################################"
+	@echo "Start Section for project files"
+	@echo "Add this into the <ItemGroup></ItemGroup> section of the *.cproj file"
+	@for src_file in $(SRC); do \
+		echo "<Compile Include=\"$$src_file\">"; \
+		echo "<SubType>compile</SubType>"; \
+		echo "<Link>$$(basename $$src_file)</Link>"; \
+		echo "</Compile>"; \
+	done
+	@echo "End Section for project files"
+	@echo "######################################################"
+	@echo "######################################################"
+	@echo "Start Section for defines"
+	@echo "Add this into the section of the *.cproj file"
+	@echo " - Attention: There are RELEASE and DEBUG configuration - add it to both"
+	@echo "    <avrgcc.compiler.symbols.DefSymbols>"
+	@echo "    <ListValues>"
+	@echo "     .... add here ..."
+	@echo "    </ListValues>"
+	@echo "    </avrgcc.compiler.symbols.DefSymbols>"
+	@for flag in $(BASE_CC_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-D\(.*\)/<Value>\1<\/Value>/p' | sed 's/"/\\"/g'; \
+	done
+	@for flag in $(BASE_C_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-D\(.*\)/<Value>\1<\/Value>/p' | sed 's/"/\\"/g'; \
+	done
+	@for flag in $(CC_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-D\(.*\)/<Value>\1<\/Value>/p' | sed 's/"/\\"/g'; \
+	done
+	@for flag in $(C_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-D\(.*\)/<Value>\1<\/Value>/p' | sed 's/"/\\"/g'; \
+	done
+	@echo "End Section for defines"
+	@echo "######################################################"
+	@echo "######################################################"
+	@echo "Start Section for include paths"
+	@echo "Add this into the section of the *.cproj file"
+	@echo " - Attention: There are RELEASE and DEBUG configuration - add it to both"
+	@echo "    <avrgcc.compiler.directories.IncludePaths>"
+	@echo "    <ListValues>"
+	@echo "     .... add here ..."
+	@echo "    </ListValues>"
+	@echo "    </avrgcc.compiler.directories.IncludePaths>"
+	@for flag in $(BASE_CC_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-I\(.*\)/<Value>..\/\1<\/Value>/p'; \
+	done
+	@for flag in $(BASE_C_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-I\(.*\)/<Value>..\/\1<\/Value>/p'; \
+	done
+	@for flag in $(CC_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-I\(.*\)/<Value>..\/\1<\/Value>/p'; \
+	done
+	@for flag in $(C_FLAGS); do \
+		echo "$$flag" | sed -n 's/\-I\(.*\)/<Value>..\/\1<\/Value>/p'; \
+	done
+	@echo "End Section for include paths"
+	@echo "######################################################"
+
+
 
