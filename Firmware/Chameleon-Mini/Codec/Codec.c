@@ -25,11 +25,13 @@ static volatile struct {
 uint8_t CodecBuffer[CODEC_BUFFER_SIZE];
 uint8_t CodecBuffer2[CODEC_BUFFER_SIZE];
 
-void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCB_VECT)(void) = NULL;
 void (* volatile isr_func_TCD0_CCC_vect)(void) = NULL;
 void (* volatile isr_func_CODEC_DEMOD_IN_INT0_VECT)(void) = NULL;
 void (* volatile isr_func_ACA_AC0_vect)(void);
 void (* volatile isr_func_TCE0_CCA_vect)(void) = NULL; // TODO_sniff does this have to be shared? It is not used at this point
+void (* volatile isr_func_CODEC_TIMER_LOADMOD_OVF_VECT)(void) = NULL;
+void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCA_VECT)(void) = NULL;
+void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCB_VECT)(void) = NULL;
 
 // the following three functions prevent sending data directly after turning on the reader field
 void CodecReaderFieldStart(void) { // DO NOT CALL THIS FUNCTION INSIDE APPLICATION!

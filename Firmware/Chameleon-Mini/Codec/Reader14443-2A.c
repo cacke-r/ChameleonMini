@@ -225,7 +225,8 @@ ISR(ACA_AC1_vect) { // this interrupt either finds the SOC or gets triggered bef
 // according to the pause and modulated period
 // if the half bit duration is modulated, then add 1 to buffer
 // if the half bit duration is not modulated, then add 0 to buffer
-ISR(CODEC_TIMER_LOADMOD_CCA_VECT) { // pause found
+// ISR(CODEC_TIMER_LOADMOD_CCA_VECT) { // pause found
+ISR_SHARED isr_Reader14443_2A_CODEC_TIMER_LOADMOD_CCA_VECT(void) { // pause found
     uint8_t tmp = CODEC_TIMER_TIMESTAMPS.CNTL;
     CODEC_TIMER_TIMESTAMPS.CNT = 0;
 

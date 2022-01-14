@@ -125,9 +125,16 @@ void isr_ISO15693_CODEC_TIMER_SAMPLING_CCC_VECT(void);
 extern void (* volatile isr_func_CODEC_DEMOD_IN_INT0_VECT)(void);
 void isr_ISO14443_2A_TCD0_CCC_vect(void);
 void isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT(void);
+extern void (* volatile isr_func_CODEC_TIMER_LOADMOD_OVF_VECT)(void);
+void isr_ISO14443_2A_CODEC_TIMER_LOADMOD_OVF_VECT(void);
+void isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void);
+extern void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCA_VECT)(void);
+void isr_Reader14443_2A_CODEC_TIMER_LOADMOD_CCA_VECT(void); // TODO_sniff register this function in iso 14 reader init
+void isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void);
 extern void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCB_VECT)(void);
 void isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 void isr_SniffISO14443_2A_CODEC_TIMER_LOADMOD_CCB_VECT(void);
+void isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 extern void (* volatile isr_func_ACA_AC0_vect)(void); // TODO_sniff does this have to be shared? It is not used at this point
 extern void (* volatile isr_func_TCE0_CCA_vect)(void); // TODO_sniff does this have to be shared? It is not used at this point
 
