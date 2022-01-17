@@ -350,8 +350,8 @@ INLINE void CardSniffInit(void) {
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc; /* Keep CCA/CCB interrupts disabled (will be enabled on demand) */
 
     /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
-    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT; /* Restart VCD sniff on VICC SOC timeout */
-    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* Decode data every half-bit period */
+    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout; /* Restart VCD sniff on VICC SOC timeout */
+    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode; /* Decode data every half-bit period */
     isr_func_CODEC_TIMER_LOADMOD_CCB_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT; /* Handle spurious SOC (noise) detection */
 
     /**
@@ -412,8 +412,7 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
 /**
  * This interrupt handles VICC->VCD SOC timeout and restarts VCD->VICC sniffing
  */
-ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout(void) {
     // TODO Actual cleanup and reader sniffing init
 }
 
@@ -421,8 +420,8 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
  * This interrupt is called every half-bit period (18,88 us) to sample received data
  * (after the first 24 pulses of the SOC have been received)
  */
-ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 }
 
 /**
@@ -447,13 +446,18 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
  * The upcoming pause and 8 pulses (logic 1) in SOC will be handled as a normal logic 1 bit.
  */
 ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     /**
+     * Reconfigure CODEC_TIMER_LOADMOD (TCE0)
      * Disable restart on channel 2 events for CODEC_TIMER_LOADMOD,
-     * from now on we will need it to count the half-bit period.
+     * from now on we want it to ignore pulses.
      */
-    CODEC_TIMER_LOADMOD.CTRLD &= TC_EVACT_OFF_gc;
+    CODEC_TIMER_LOADMOD.CNT = 0; /* Clear counter */
+    CODEC_TIMER_LOADMOD.PER = 512; /* Reduce period to half-bit duration */
+    CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_OFF_gc; /* Disable restart on every channel 2 event */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_OFF_gc; /* Disable CCB */
+    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode; /* Change interrupt handler to bit decoder */
 
     CODEC_TIMER_TIMESTAMPS.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Disable this interrupt */
 }
