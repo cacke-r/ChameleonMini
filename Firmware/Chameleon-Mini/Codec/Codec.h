@@ -65,6 +65,7 @@
 #define CODEC_THRESHOLD_CALIBRATE_MAX   2048
 #define CODEC_THRESHOLD_CALIBRATE_STEPS 16
 #define CODEC_TIMER_TIMESTAMPS		TCD1
+#define CODEC_TIMER_TIMESTAMPS_OVF_VECT	TCD1_OVF_vect
 #define CODEC_TIMER_TIMESTAMPS_CCA_VECT	TCD1_CCA_vect
 #define CODEC_TIMER_TIMESTAMPS_CCB_VECT	TCD1_CCB_vect
 
@@ -129,12 +130,17 @@ extern void (* volatile isr_func_CODEC_TIMER_LOADMOD_OVF_VECT)(void);
 void isr_ISO14443_2A_CODEC_TIMER_LOADMOD_OVF_VECT(void);
 void isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void);
 extern void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCA_VECT)(void);
-void isr_Reader14443_2A_CODEC_TIMER_LOADMOD_CCA_VECT(void); // TODO_sniff register this function in iso 14 reader init
+void isr_Reader14443_2A_CODEC_TIMER_LOADMOD_CCA_VECT(void);
 void isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void);
 extern void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCB_VECT)(void);
 void isr_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 void isr_SniffISO14443_2A_CODEC_TIMER_LOADMOD_CCB_VECT(void);
 void isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void);
+extern void (* volatile isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT)(void);
+void isr_Reader14443_2A_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void);
+extern void (* volatile isr_func_CODEC_TIMER_TIMESTAMPS_CCB_VECT)(void);
+void isr_SniffISO14443_2A_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void);
+void isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void);
 extern void (* volatile isr_func_ACA_AC0_vect)(void); // TODO_sniff does this have to be shared? It is not used at this point
 extern void (* volatile isr_func_TCE0_CCA_vect)(void); // TODO_sniff does this have to be shared? It is not used at this point
 

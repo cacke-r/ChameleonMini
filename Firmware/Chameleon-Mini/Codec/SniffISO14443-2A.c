@@ -431,7 +431,7 @@ ISR_SHARED isr_SniffISO14443_2A_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
     }
 }
 // EOC of Card->Reader found
-ISR(CODEC_TIMER_TIMESTAMPS_CCB_VECT) { // EOC found
+ISR_SHARED isr_SniffISO14443_2A_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void) { // EOC found
 
     // Disable LOADMOD Timer
     CODEC_TIMER_LOADMOD.INTCTRLB = 0;               // Disable Interrupt
@@ -476,6 +476,7 @@ void Sniff14443ACodecInit(void) {
     CodecInitCommon();
     isr_func_ACA_AC0_vect = &isr_SniffISO14443_2A_ACA_AC0_VECT;
     isr_func_CODEC_TIMER_LOADMOD_CCB_VECT = &isr_SniffISO14443_2A_CODEC_TIMER_LOADMOD_CCB_VECT;
+    isr_func_CODEC_TIMER_TIMESTAMPS_CCB_VECT = &isr_SniffISO14443_2A_CODEC_TIMER_TIMESTAMPS_CCB_VECT;
     // Enable demodulator power
     CodecSetDemodPower(true);
 

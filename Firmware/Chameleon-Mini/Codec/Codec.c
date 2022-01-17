@@ -32,6 +32,8 @@ void (* volatile isr_func_TCE0_CCA_vect)(void) = NULL; // TODO_sniff does this h
 void (* volatile isr_func_CODEC_TIMER_LOADMOD_OVF_VECT)(void) = NULL;
 void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCA_VECT)(void) = NULL;
 void (* volatile isr_func_CODEC_TIMER_LOADMOD_CCB_VECT)(void) = NULL;
+void (* volatile isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT)(void) = NULL;
+void (* volatile isr_func_CODEC_TIMER_TIMESTAMPS_CCB_VECT)(void) = NULL;
 
 // the following three functions prevent sending data directly after turning on the reader field
 void CodecReaderFieldStart(void) { // DO NOT CALL THIS FUNCTION INSIDE APPLICATION!
