@@ -404,7 +404,7 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
     int16_t temp_read = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude * 1/2*/
     DACB.CH0DATA = temp_read; /* Update DAC output (AC negative comparation threshold) */
     ADCA.CMP = temp_read; /* Save as threshold for ADC interrupt as well */
-    ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; /* Finally enable interrupt on value from ADC going below above threshold */
+    ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; /* Finally enable ADC channel 1 compare interrupt when value falls below threshold */
 
     ACA.AC0CTRL &= ~AC_INTLVL_HI_gc; /* Disable this interrupt */
 }
@@ -447,7 +447,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
  * The upcoming pause and 8 pulses (logic 1) in SOC will be handled as a normal logic 1 bit.
  */
 ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     /**
      * Disable restart on channel 2 events for CODEC_TIMER_LOADMOD,
@@ -470,11 +470,22 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
 
     int16_t temp_read = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude * 1/2*/
     DACB.CH0DATA = temp_read; /* Update DAC output (AC negative comparation threshold) */
-    ADCA.CMP = temp_read + (temp_read >> 1); /* Update ADC threshold as well with amplitude * 3/4 (interrupt still enabled) */
+    ADCA.CMP = temp_read + (temp_read >> 1); /* Update ADC threshold as well with amplitude * 3/4 */
 }
 
+/**
+ * This interrupt is called when the signal sampled by the ADC in free running mode (always converting)
+ * goes below the given threshold saved in ADCA.CMP register.
+ * This will update both the ADC compare value and the analog comparator threshold, since the two are linked
+ */
 ISR(ADCA_CH1_vect) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
+    int16_t temp_read = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude * 1/2*/
+    DACB.CH0DATA = temp_read; /* Update DAC output (AC negative comparation threshold) */
+    ADCA.CMP = temp_read; /* Update ADC threshold as well */
+
+    // TODO re enable CODEC_TIMER_TIMESTAMPS CCA interrupt, maybe? We might need to update the threshold after 3 pulses
 }
 
 
