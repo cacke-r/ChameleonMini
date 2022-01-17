@@ -279,8 +279,10 @@ ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
  * TODO extract to single subcarrier specific function and call this or double subcarrier
  */
 INLINE void CardSniffInit(void) {
-    /* Enable the analog comparator AC interrupt */
-    ACA.STATUS = AC_AC0IF_bm; /* Analog Comparator 0 Interrupt Flag bit mask. */
+    /**
+     * Configure analog comparator A (the only one in this MCU) to recognize carrier pulses modulated by the VICC
+     */
+    ACA.STATUS = AC_AC0IF_bm; /* Enable the analog comparator 0 interrupt */
     /* enable AC | high speed mode | large hysteresis | sample on rising edge | interrupt level high */
     /* Hysteresis is not actually needed, but appeared to be working and sounds like it might be more robust */
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_HI_gc;
@@ -354,6 +356,9 @@ INLINE void CardSniffInit(void) {
 
     /**
      * Get current signal amplitude and record it as "silence"
+     *
+     * This can't be moved closer to ADC configuration since the ADC has to be populated with valid
+     * values and it takes 7*4 clock cycles to do so (7 ADC stages * 4 ADC clock prescaler)
      */
     int16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
     if (temp_read < 0) temp_read = 1;
@@ -396,7 +401,10 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
      * The thresholdwill be overwritten with a more updated value once we reach
      * the third pulse thanks to CODEC_TIMER_TIMESTAMPS.CCA being = 3.
      */
-    DACB.CH0DATA = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude / 2*/
+    int16_t temp_read = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude * 1/2*/
+    DACB.CH0DATA = temp_read; /* Update DAC output (AC negative comparation threshold) */
+    ADCA.CMP = temp_read; /* Save as threshold for ADC interrupt as well */
+    ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; /* Finally enable interrupt on value from ADC going below above threshold */
 
     ACA.AC0CTRL &= ~AC_INTLVL_HI_gc; /* Disable this interrupt */
 }
@@ -429,6 +437,8 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
 
     ACA.AC0CTRL |= AC_INTLVL_HI_gc; /* Re-enable analog comparator interrupt to search for another pulse */
 
+    // ADCA.CH1.INTCTRL &= ADC_CH_INTLVL_OFF_gc; /* Disable ADC interrupt (previously set the wrong threshold) */
+
     CODEC_TIMER_LOADMOD.INTCTRLB &= TC_CCBINTLVL_OFF_gc; /* Disable this interrupt */
 }
 
@@ -458,9 +468,14 @@ ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    DACB.CH0DATA = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Update threshold to current_amplitude * 0,5 */
+    int16_t temp_read = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude * 1/2*/
+    DACB.CH0DATA = temp_read; /* Update DAC output (AC negative comparation threshold) */
+    ADCA.CMP = temp_read + (temp_read >> 1); /* Update ADC threshold as well with amplitude * 3/4 (interrupt still enabled) */
 }
 
+ISR(ADCA_CH1_vect) {
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+}
 
 
 
@@ -597,22 +612,6 @@ void SniffISO15693CodecDeInit(void) {
 
     CodecSetSubcarrier(CODEC_SUBCARRIERMOD_OFF, 0);
     CodecSetDemodPower(false);
-}
-
-
-void DebugPrintTimerRegs(void){ // TODO remove this function
-
-    char log_text[100];
-    log_text[99] = '\0';
-    snprintf(log_text, 99, "CODEC_TIMER_LOADMOD.CNT=%d", CODEC_TIMER_LOADMOD.CNT);
-    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
-    snprintf(log_text, 99, "CODEC_TIMER_LOADMOD.PER=%d", CODEC_TIMER_LOADMOD.PER);
-    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
-    snprintf(log_text, 99, "CODEC_TIMER_SAMPLING.CNT=%d", CODEC_TIMER_SAMPLING.CNT);
-    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
-    snprintf(log_text, 99, "CODEC_TIMER_SAMPLING.PER=%d", CODEC_TIMER_SAMPLING.PER);
-    LogEntry(LOG_INFO_GENERIC, log_text, strlen(log_text));
-
 }
 
 void SniffISO15693CodecTask(void) {
