@@ -185,7 +185,7 @@ INLINE void CodecInitCommon(void) {
     EVSYS.CH0MUX = CODEC_DEMOD_IN_EVMUX0;
     EVSYS.CH1MUX = CODEC_DEMOD_IN_EVMUX1;
 
-    EVSYS.CH2MUX = CODEC_DEMOD_IN_EVMUX0;
+    // EVSYS.CH2MUX = CODEC_DEMOD_IN_EVMUX0; // TODO_sniff why was this duplicated?
 
 
     /* Configure loadmod pin configuration and use a virtual port configuration

@@ -36,9 +36,9 @@
 #define DataRegister            Codec8Reg0
 #define StateRegister           Codec8Reg1
 #define ModulationPauseCount    Codec8Reg2
-#define HalfBitReceived         Codec8Reg3 /* Store the amount of received half-bits */
+#define BitSampleCount          Codec8Reg3 /* Store the amount of received half-bits */
 #define SampleRegister          CodecCount16Register1 /* Store a byte of logical bits, 16 */
-#define BitSampleCount          CodecCount16Register2
+#define ReaderFloorNoiseLevel   CodecCount16Register2 /* Use register because it will be subtracted from every ADC reading */
 #define CodecBufferPtr          CodecPtrRegister1
 
 #define CODEC_18uS_SLOT_TIMER CODEC_READER_TIMER
@@ -53,6 +53,8 @@ typedef enum {
     DEMOD_1_OUT_OF_4_STATE,
     DEMOD_1_OUT_OF_256_STATE
 } DemodStateType;
+
+static volatile uint16_t DemodFloorNoiseLevel;
 
 static volatile DemodStateType DemodState;
 static volatile uint8_t ShiftRegister;
@@ -245,17 +247,13 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
  * TODO extract to single subcarrier specific function and call this or double subcarrier
  */
 INLINE void CardSniffInit(void) {
-    /**
-     * Configure analog comparator A (the only one in this MCU) to recognize carrier pulses modulated by the VICC
-     */
-    ACA.STATUS = AC_AC0IF_bm; /* Enable the analog comparator 0 interrupt */
-    /* enable AC | high speed mode | large hysteresis | sample on rising edge | interrupt level high */
-    /* Hysteresis is not actually needed, but appeared to be working and sounds like it might be more robust */
-    ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_HI_gc;
+    /* Temporary disable ACA Channel 0 until it will be properly configured */
+    ACA.STATUS = 0; /* Clear previous interrupt flags */
+    ACA.AC0CTRL = 0;
 
     /**
-     * Route events from the analog comparator on the event system using channel 2
-     * (channel 0 and 1 are used by the antenna).
+     * Route events from the analog comparator (which will be configured later) on the event system
+     * using channel 2 (channel 0 and 1 are used by the antenna).
      * These events will be counted by CODEC_TIMER_TIMESTAMPS and will (sometimes)
      * reset CODEC_TIMER_LOADMOD.
      */
@@ -265,17 +263,23 @@ INLINE void CardSniffInit(void) {
      * Prepare ADC for antenna field sampling
      * Use conversion channel 1 (0 is already used for reader field RSSI sensing), attached to
      * CPU pin 42 (DEMOD-READER/2.3C).
+     * Use conversion channel 2, attached to CPU pin 3 (DEMOD/2.3C).
      *
-     * Values from DEMOD-READER/2.3C will be used to identify a suitable threshold.
+     * Values from DEMOD/2.3C will be used to identify the first pulse threshold: ADC channel 2 is sampling on
+     * the same channel where analog comparator is comparing values
+     * Values from DEMOD-READER/2.3C will be used to identify noise level and subsequent pulses levels. We need
+     * to use a different channel because of the signal shape in this channel is easier to analyze.
      *
-     * The ADC will also be used to detect when the peak amplitude is decreasing via the compare register:
-     * the sensed signal amplitude will be used to mantain a valid threshold when signal
+     * The ADC will also be used to detect when the pulses amplitude is decreasing using the compare register:
+     * the sensed signal amplitude will be used to mantain a valid threshold when signal changes in shape.
      */
     ADCA.PRESCALER = ADC_PRESCALER_DIV4_gc; /* Increase ADC clock speed from default setting in AntennaLevel.h */
     ADCA.CTRLB |= ADC_FREERUN_bm; /* Set ADC as free running */
-    ADCA.EVCTRL = ADC_SWEEP_01_gc; /* Enable free running sweep on channel 0 and 1 */
-    ADCA.CH1.MUXCTRL = ADC_CH_MUXPOS_PIN2_gc; /* Sample PORTA Pin 2 (DEMOD-READER/2.3C) in channel 1 */
+    ADCA.EVCTRL = ADC_SWEEP_012_gc; /* Enable free running sweep on channel 0, 1 and 2 */
+    ADCA.CH1.MUXCTRL = ADC_CH_MUXPOS_PIN11_gc; /* Sample PORTB Pin 3 (same as PORTA Pin 7) (DEMOD-READER/2.3C) in channel 1 (same pin the analog comparator is comparing to) */
     ADCA.CH1.CTRL = ADC_CH_INPUTMODE_SINGLEENDED_gc; /* Single-ended input, no gain */
+    ADCA.CH2.MUXCTRL = ADC_CH_MUXPOS_PIN9_gc; /* Sample PORTB Pin 1 (same as PORTA Pin 2) (DEMOD/2.3C) in channel 2 */
+    ADCA.CH2.CTRL = ADC_CH_INPUTMODE_SINGLEENDED_gc; /* Single-ended input, no gain */
     /* Later on we'll configure ADCA.CMP register with the threshold value */
     /* Later on we'll enable interrupts on channel 1 when amplitude goes
        below threshold ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; */
@@ -327,9 +331,51 @@ INLINE void CardSniffInit(void) {
      * This can't be moved closer to ADC configuration since the ADC has to be populated with valid
      * values and it takes 7*4 clock cycles to do so (7 ADC stages * 4 ADC clock prescaler)
      */
-    int16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
-    if (temp_read < 0) temp_read = 1;
-    DACB.CH0DATA = temp_read + (temp_read >> 4); /* Silence amplitude * 1,06, to slightly reduce noise */
+    ReaderFloorNoiseLevel = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET; /* PORTA Pin 7 (DEMOD-READER/2.3C) - CPU pin 3/5 */
+    DemodFloorNoiseLevel = ADCA.CH2RES - ANTENNA_LEVEL_OFFSET; /* PORTA Pin 2 (DEMOD/2.3C) - CPU pin 7 */
+    for (uint8_t i = 0; i < 7; i++) { /* Add 7 more values */
+        asm("nop"); /* Wait for the ADC to update channel 0 */
+        ReaderFloorNoiseLevel += ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
+        DemodFloorNoiseLevel += ADCA.CH2RES - ANTENNA_LEVEL_OFFSET;
+    }
+    ReaderFloorNoiseLevel >>= 3; /* Get the average dividing by 8 */
+    DemodFloorNoiseLevel >>= 3;
+    /**
+     * Typical values with my CR95HF reader:
+     * ReaderFloorNoiseLevel: ~1500
+     * DemodFloorNoiseLevel: ~900
+    */
+
+    // char tmpBuf[20]; // TODO remove
+    // snprintf(tmpBuf, 20, "RDR %d DMD %d", ReaderFloorNoiseLevel, DemodFloorNoiseLevel);
+    // TerminalSendString(tmpBuf);
+
+    // DACB.CH0DATA = ReaderFloorNoiseLevel + (ReaderFloorNoiseLevel >> 2); /* Silence amplitude * 1,12, to slightly reduce noise */
+    DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Slightly increase DAC output to ease triggering */
+
+    // TEMP output DAC
+    // DACB.CTRLB = DAC_CHSEL_DUAL_gc;
+    // DACB.CTRLA |= DAC_CH1EN_bm;
+    // DACB.CH1DATA = DACB.CH0DATA;
+
+
+
+    ADCA.EVCTRL = ADC_SWEEP_01_gc; /* Sample only first 2 channels from now on */
+
+    /**
+     * Finally, now that we have the DAC set up, configure analog comparator A (the only one in this MCU)
+     * to recognize carrier pulses modulated by the VICC against the correct threshold coming from the DAC.
+     */
+
+    /* Register ACA channel 0 interrupt handler*/
+    isr_func_ACA_AC0_vect = &isr_SNIFF_ISO15693_ACA_AC0_VECT;
+
+    // ACA.AC0MUXCTRL = AC_MUXPOS_PIN2_gc | AC_MUXNEG_DAC_gc; /* Compare PORTA Pin 2 (DEMOD-READER/2.3C) with DAC output */
+    ACA.AC0MUXCTRL = AC_MUXPOS_DAC_gc | AC_MUXNEG_PIN7_gc; /* Tigger when DAC signal is above PORTA Pin 7 (DEMOD/2.3C) */ // TODO remove
+    /* enable AC | high speed mode | large hysteresis | sample on rising edge | high level interrupts */
+    /* Hysteresis is not actually needed, but appeared to be working and sounds like it might be more robust */
+    ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_HI_gc;
+
 }
 
 INLINE void CardSniffDeinit(void) {
@@ -358,7 +404,9 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
+    /////////////////////////////////////////////////// TODO decomment this
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_HI_gc; /* Enable level 0 CCB interrupt to filter spurious pulses */
+    /////////////////////////////////////////////////// TODO decomment this
 
     /**
      * Update threshold with current pulses amplitude from the ADC.
@@ -369,12 +417,20 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
      * The thresholdwill be overwritten with a more updated value once we reach
      * the third pulse thanks to CODEC_TIMER_TIMESTAMPS.CCA being = 3.
      */
-    int16_t temp_read = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude * 1/2*/
-    DACB.CH0DATA = temp_read; /* Update DAC output (AC negative comparation threshold) */
-    ADCA.CMP = temp_read; /* Save as threshold for ADC interrupt as well */
-    ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; /* Finally enable ADC channel 1 compare interrupt when value falls below threshold */
+    // DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 1); /* Update DAC output (AC negative comparation threshold) with slightly higher threshold to reduce noise until a new appropriate value is sampled from the antenna */
+    // ADCA.CMP = temp_read; /* Save as threshold for ADC interrupt as well */
+    // ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; /* Finally enable ADC channel 1 compare interrupt when value falls below threshold */
 
-    ACA.AC0CTRL &= ~AC_INTLVL_HI_gc; /* Disable this interrupt */
+    // // TODO remove this temporary code: setting up DAC channel 1
+    // DACB.CTRLB = DAC_CHSEL_DUAL_gc;
+    // DACB.CTRLA |= DAC_CH1EN_bm;
+    // DACB.CH1DATA = DemodFloorNoiseLevel << 2; /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
+
+
+
+    /////////////////////////////////////////////////// TODO decomment this
+    // ACA.AC0CTRL &= ~AC_INTLVL_HI_gc; /* Disable this interrupt */
+    /////////////////////////////////////////////////// TODO decomment this
 }
 
 /**
@@ -390,11 +446,11 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout(void) {
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
     // PORTE.OUTSET = PIN0_bm; // TODO_sniff remove this testing code
-    if (CODEC_TIMER_TIMESTAMPS.CNT > 4) {
-        PORTE.OUTSET = PIN0_bm; // TODO_sniff remove this testing code
-    } else {
-        PORTE.OUTCLR = PIN0_bm; // TODO_sniff remove this testing code
-    }
+    // if (CODEC_TIMER_TIMESTAMPS.CNT > 4) {
+    //     PORTE.OUTSET = PIN0_bm; // TODO_sniff remove this testing code
+    // } else {
+    //     PORTE.OUTCLR = PIN0_bm; // TODO_sniff remove this testing code
+    // }
     CODEC_TIMER_TIMESTAMPS.CNT = 0;
 }
 
@@ -404,11 +460,11 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
  * TODO accumulate bits into bytes here
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
-    if (CODEC_TIMER_TIMESTAMPS.CNT > 4) {
-        PORTE.OUTSET = PIN0_bm; // TODO_sniff remove this testing code
-    } else {
-        PORTE.OUTCLR = PIN0_bm; // TODO_sniff remove this testing code
-    }
+    // if (CODEC_TIMER_TIMESTAMPS.CNT > 4) {
+    //     PORTE.OUTSET = PIN0_bm; // TODO_sniff remove this testing code
+    // } else {
+    //     PORTE.OUTCLR = PIN0_bm; // TODO_sniff remove this testing code
+    // }
     CODEC_TIMER_TIMESTAMPS.CNT = 0;
 }
 
@@ -419,10 +475,15 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear pulses counter (previously, we received garbage) */
 
     ACA.AC0CTRL |= AC_INTLVL_HI_gc; /* Re-enable analog comparator interrupt to search for another pulse */
+
+    // DACB.CH0DATA = ReaderFloorNoiseLevel + (ReaderFloorNoiseLevel >> 2);
+    DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
 
     // ADCA.CH1.INTCTRL &= ADC_CH_INTLVL_OFF_gc; /* Disable ADC interrupt (previously set the wrong threshold) */
 
@@ -437,6 +498,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
  * The upcoming pause and 8 pulses (logic 1) in SOC will be handled as a normal logic 1 bit.
  */
 ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
+    // PORTE.OUTSET = PIN0_bm;
     /**
      * Reconfigure CODEC_TIMER_LOADMOD (TCE0).
      * Disable restart on channel 2 events for CODEC_TIMER_LOADMOD,
@@ -462,12 +524,15 @@ ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
  * increase it.
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
+    // PORTE.OUTSET = PIN0_bm;
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    int16_t temp_read = (ADCA.CH1RES - ANTENNA_LEVEL_OFFSET) >> 1; /* Amplitude * 1/2*/
+    int16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET; /* Amplitude * 1/2*/
     DACB.CH0DATA = temp_read; /* Update DAC output (AC negative comparation threshold) */
-    ADCA.CMP = temp_read + (temp_read >> 1); /* Update ADC threshold as well with amplitude * 3/4 */
+    // ADCA.CMP = temp_read - (temp_read >> 2); /* Update ADC threshold as well with amplitude * 3/4 */
+
+    // DACB.CH1DATA = DACB.CH0DATA;
 
     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_OFF_gc; /* Disable this interrupt */
 }
@@ -585,7 +650,6 @@ void SniffISO15693CodecInit(void) {
     // TODO_sniff temp code start
     PORTE.DIR = PIN0_bm;
     CodecThresholdReset(); // TODO_sniff do we need this?
-    isr_func_ACA_AC0_vect = &isr_SNIFF_ISO15693_ACA_AC0_VECT; // TODO move to SSC Card init
 
     // TODO_sniff temp code end
 
@@ -600,6 +664,9 @@ void SniffISO15693CodecInit(void) {
      * to CODEC_DEMOD_IN_PORT (PORTB) interrupt 0
      */
     isr_func_CODEC_DEMOD_IN_INT0_VECT = &isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT;
+
+    /* Change DAC reference source to Internal 1V (same as ADC source) */
+    DACB.CTRLC = DAC_REFSEL_INT1V_gc;
 
     StartSniffISO15693Demod();
 }
@@ -634,6 +701,9 @@ void SniffISO15693CodecDeInit(void) {
 
     CodecSetSubcarrier(CODEC_SUBCARRIERMOD_OFF, 0);
     CodecSetDemodPower(false);
+
+    /* Restore default DAC reference to Codec.h setting */
+    DACB.CTRLC = DAC_REFSEL_AVCC_gc;
 }
 
 void SniffISO15693CodecTask(void) {
