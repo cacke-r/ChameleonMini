@@ -293,14 +293,16 @@ INLINE void CardSniffInit(void) {
      * CCA = 3 pulses, to update the threshold to a more sensible value
      */
     CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
-    CODEC_TIMER_TIMESTAMPS.PER = 23; /* SOC completed (24-1 as PER is 0-based) */
-    CODEC_TIMER_TIMESTAMPS.CCA = 5;
+    CODEC_TIMER_TIMESTAMPS.PER = 24; /* SOC completed */
+    CODEC_TIMER_TIMESTAMPS.CCA = 3;
+    CODEC_TIMER_TIMESTAMPS.CCB = 5;
     CODEC_TIMER_TIMESTAMPS.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow interrupt to handle SOC reception */
-    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable CCA interrupt */
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc | TC_CCBINTLVL_HI_gc; /* Enable CCA/CCB interrupt */
     CODEC_TIMER_TIMESTAMPS.CTRLFSET = TC_CMD_RESTART_gc; /* Reset counter */
 
     /* Register CODEC_TIMER_TIMESTAMPS shared interrupt handlers */
-    isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT; /* Handle spurious SOC (noise) detection */
+    isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT;
+    isr_func_CODEC_TIMER_TIMESTAMPS_CCB_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCB_VECT;
 
     /**
      * CODEC_TIMER_LOADMOD (TCE0) has multiple usages: its period overflow handles SOC timeout,
@@ -389,10 +391,21 @@ INLINE void CardSniffDeinit(void) {
  * If we did not receive a SOC but, indeed, noise, this interrupt will be enabled again.
  */
 ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTSET = PIN0_bm;
 
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_OFF_gc; /* Disable this interrupt */
+
+    /* Update DAC output (AC positive comparation threshold) with higher threshold to reduce noise until a new appropriate value is sampled from the antenna */
+    // uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
+    // if ((temp_read << 1) + (temp_read >> 1) > 0xfff) { /* Naive overflow check */
+    //     DACB.CH0DATA = 0xfff;
+    // } else {
+    //     DACB.CH0DATA = (temp_read << 1)  + (temp_read >> 1); /* DAC output will be further increased after 2 and 5 pulses */
+    // }
+    DACB.CH0DATA = (DemodFloorNoiseLevel << 1) - (DemodFloorNoiseLevel >> 2); /* Blindly increase threshold after 1 pulse */
+    /* Note: by the time the DAC has changed its value, we're already after peak 2 */
 
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_HI_gc; /* Enable level 0 CCB interrupt to filter spurious pulses */
 
@@ -405,7 +418,7 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
      * The thresholdwill be overwritten with a more updated value once we reach
      * the third pulse thanks to CODEC_TIMER_TIMESTAMPS.CCA being = 3.
      */
-    DACB.CH0DATA = (DemodFloorNoiseLevel << 1); /* Update DAC output (AC positive comparation threshold) with higher threshold to reduce noise until a new appropriate value is sampled from the antenna */
+
     // ADCA.CMP = temp_read; /* Save as threshold for ADC interrupt as well */
     // ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; /* Finally enable ADC channel 1 compare interrupt when value falls below threshold */
 
@@ -421,10 +434,15 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
  * Classical scenario: spurious pulse detected as SOC start.
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
+
+    // TODO count global failed matches, after X matches increase threshold slightly by a fixed amount or sense floor noise level again.
+
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTCLR = PIN0_bm;
 
     DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
+    DACB.CH1DATA = DACB.CH0DATA; /* Restore */ // TODO remove this testing DAC channel 1 output
 
     ACA.AC0CTRL |= AC_INTLVL_HI_gc; /* Re-enable analog comparator interrupt to search for another pulse */
 
@@ -464,7 +482,37 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    DACB.CH0DATA = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET + FloorNoiseLevelDelta; /* Further increase DAC output after 3 pulses */
+    uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
+    if (temp_read > 0xfff) { /* Naive overflow check */
+        DACB.CH0DATA = 0xfff;
+    } else {
+        DACB.CH0DATA = temp_read; /* Further increase DAC output after 3 pulses */
+    }
+    DACB.CH1DATA = DACB.CH0DATA;
+
+    // char tmpBuf[20]; // TODO remove
+    // snprintf(tmpBuf, 20, "CH0 %d", DACB.CH0DATA);
+    // TerminalSendString(tmpBuf);
+}
+
+/**
+ * This interrupt is called after 5 subcarrier pulses and increases the threshold even more
+ */
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void) {
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
+    uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
+    if (temp_read + (temp_read >> 2) + (temp_read >> 3) > 0xfff) { /* Naive overflow check */
+        DACB.CH0DATA = 0xfff;
+    } else {
+        DACB.CH0DATA = temp_read + (temp_read >> 2) + (temp_read >> 3); /* Further increase DAC output after 5 pulses */
+    }
+
+    DACB.CTRLB = DAC_CHSEL_SINGLE_gc;
+    // DACB.CTRLB = DAC_CHSEL_DUAL_gc;
+    DACB.CTRLA |= DAC_CH1EN_bm;
+    DACB.CH1DATA = DACB.CH0DATA; /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
 
     // char tmpBuf[20]; // TODO remove
     // snprintf(tmpBuf, 20, "CH0 %d", DACB.CH0DATA);
