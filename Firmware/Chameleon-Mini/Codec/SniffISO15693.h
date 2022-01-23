@@ -18,9 +18,6 @@
 #define SOF_PATTERN                     0x1D
 #define EOF_PATTERN                     0xB8
 
-#define T1_NOMINAL_CYCLES               4352 - 14//4352 - 25 /* ISR prologue compensation */
-#define WRITE_GRID_CYCLES               4096
-
 //Used when checking the request sent from the reader
 #define ISO15693_REQ_SUBCARRIER_SINGLE  0x00
 #define ISO15693_REQ_SUBCARRIER_DUAL    0x01

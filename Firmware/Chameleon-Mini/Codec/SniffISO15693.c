@@ -24,24 +24,19 @@
 #define ISO15693_CARD_SAMPLE_CLK        TC_CLKSEL_DIV4_gc /* Max possible sampling resolution */
 #define ISO15693_CARD_SAMPLE_PERIOD     148 // 18.5us
 
-#define WRITE_GRID_CYCLES       4096
 #define SUBCARRIER_1            32
 #define SUBCARRIER_2            28
 #define SUBCARRIER_OFF          0
-#define SOF_PATTERN             0x1D // 0001 1101
-#define EOF_PATTERN             0xB8 // 1011 1000
 
 // These registers provide quick access but are limited
 // so global vars will be necessary
 #define DataRegister            Codec8Reg0
-#define StateRegister           Codec8Reg1
+// #define StateRegister           Codec8Reg1
 #define ModulationPauseCount    Codec8Reg2
 #define BitSampleCount          Codec8Reg3 /* Store the amount of received half-bits */
-#define SampleRegister          CodecCount16Register1 /* Store a byte of logical bits, 16 */
+#define SampleRegister          CodecCount16Register1 /* Store a byte of logical bits, 16 half-bits */
 #define FloorNoiseLevelDelta    CodecCount16Register2 /* Use register because it will be subtracted from every ADC reading */
 #define CodecBufferPtr          CodecPtrRegister1
-
-#define CODEC_18uS_SLOT_TIMER CODEC_READER_TIMER
 
 static volatile struct {
     volatile bool ReaderDemodFinished;
@@ -61,19 +56,7 @@ static volatile uint8_t ShiftRegister;
 static volatile uint8_t ByteCount;
 static volatile uint8_t bDualSubcarrier;
 static volatile uint16_t DemodByteCount;
-static volatile uint16_t AppReceivedByteCount;
-static volatile uint16_t BitRate1;
-static volatile uint16_t BitRate2;
 static volatile uint16_t SampleDataCount;
-/* First part of SOC is 24 bits long if in single subcarrier mode or 27 bits if in double subcarrier mode.
- * The CardSOCBitsCount variable is 8 if in single subcarrier or 9 if in double subcarrier,
- * and represents the size of a unit (how many bits we're checking at a time).
- */
-static volatile uint8_t CardSOCBitsCount;
-/* The CardSOCBytesCounter variable holds the number of units (of which the length is defined by CardSOCBitsCount)
- * we have already checked during Card data demodulation.
- */
-static volatile uint8_t CardSOCBytesCounter;
 
 INLINE void SNIFF_ISO15693_READER_EOC_VCD(void);
 INLINE void CardSniffInit(void);
@@ -548,7 +531,6 @@ void StartSniffISO15693Demod(void) {
     Flags.ReaderDemodFinished = 0;
     Flags.CardDemodFinished = 0;
     DemodState = DEMOD_SOC_STATE;
-    // StateRegister = LOADMOD_WAIT; // TODO set to card demod or reader demod
     DataRegister = 0;
     SampleRegister = 0;
     BitSampleCount = 0;
@@ -669,9 +651,7 @@ void SniffISO15693CodecTask(void) {
         Flags.ReaderDemodFinished = 0;
 
         DemodByteCount = ByteCount;
-        AppReceivedByteCount = 0;
         bDualSubcarrier = 0;
-        CardSOCBitsCount = 8;
 
         if (DemodByteCount > 0) {
             LogEntry(LOG_INFO_CODEC_SNI_READER_DATA, CodecBuffer, DemodByteCount);
@@ -679,7 +659,6 @@ void SniffISO15693CodecTask(void) {
 
             if (CodecBuffer[0] & ISO15693_REQ_SUBCARRIER_DUAL) {
                 bDualSubcarrier = 1;
-                CardSOCBitsCount = 9;
             }
             // TODO enable card demodulation
             // TODO set DemodState as DEMOD_SOC_STATE
