@@ -390,34 +390,27 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
  * This interrupt is called after 3 subcarrier pulses and increases the threshold
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
-    if (temp_read > 0xfff) { /* Naive overflow check */
-        DACB.CH0DATA = 0xfff;
-    } else {
-        DACB.CH0DATA = temp_read; /* Further increase DAC output after 3 pulses */
-    }
+    DACB.CH0DATA = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET; /* Further increase DAC output after 3 pulses with value from PORTA Pin 2 (DEMOD-READER/2.3) */
 
-    CODEC_TIMER_TIMESTAMPS.INTCTRLB &= TC_CCAINTLVL_OFF_gc; /* Disable this interrupt */
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_HI_gc; /* Disable this interrupt */
 }
 
 /**
  * This interrupt is called after 5 subcarrier pulses and increases the threshold even more
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
-    if (temp_read + (temp_read >> 2) + (temp_read >> 3) > 0xfff) { /* Naive overflow check */
-        DACB.CH0DATA = 0xfff;
-    } else {
-        DACB.CH0DATA = temp_read + (temp_read >> 2) + (temp_read >> 3); /* Further increase DAC output after 5 pulses */
-    }
+    // TODO decomment once correct threshold identification value has been found
+    // uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
+    // DACB.CH0DATA = temp_read + (temp_read >> 2) + (temp_read >> 3); /* Further increase DAC output after 5 pulses */
+	// DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < temp_read); /* Branchfree saturating addition for 12 bit variables (need to &, since CH0DATAH is not truncating to 12 bits) */
 
-    CODEC_TIMER_TIMESTAMPS.INTCTRLB &= TC_CCBINTLVL_OFF_gc; /* Disable this interrupt */
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCBINTLVL_OFF_gc; /* Disable this interrupt */
 }
 
 /**
@@ -472,7 +465,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
  * Classical scenario: spurious pulse detected as SOC start.
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
-    CODEC_TIMER_LOADMOD.INTCTRLB &= TC_CCBINTLVL_OFF_gc; /* Disable this interrupt */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_OFF_gc; /* Disable all compare interrupts, including this one */
 
     // DemodFloorNoiseLevel += CODEC_THRESHOLD_CALIBRATE_STEPS; /* Slightly increase DAC output value */ // TODO check if this actually helps or is a trouble with low signals
 
