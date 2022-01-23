@@ -2,7 +2,7 @@
  * SniffISO15693.h
  *
  *  Created on: 05.11.2019
- *      Author: ceres-c & MrMoDDoM
+ *      Author: ceres-c
  */
 
 #ifdef CONFIG_ISO15693_SNIFF_SUPPORT
