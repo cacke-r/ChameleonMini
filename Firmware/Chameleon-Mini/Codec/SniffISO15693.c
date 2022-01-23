@@ -55,7 +55,6 @@ typedef enum {
 } DemodStateType;
 
 static volatile uint16_t DemodFloorNoiseLevel;
-static volatile uint16_t ReaderFloorNoiseLevel;
 
 static volatile DemodStateType DemodState;
 static volatile uint8_t ShiftRegister;
@@ -293,7 +292,7 @@ INLINE void CardSniffInit(void) {
      * CCA = 3 pulses, to update the threshold to a more sensible value
      */
     CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
-    CODEC_TIMER_TIMESTAMPS.PER = 24; /* SOC completed */
+    CODEC_TIMER_TIMESTAMPS.PER = 23; /* 24 - 1 (constantly and reliably missing first pulse) SOC completed */
     CODEC_TIMER_TIMESTAMPS.CCA = 3;
     CODEC_TIMER_TIMESTAMPS.CCB = 5;
     CODEC_TIMER_TIMESTAMPS.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow interrupt to handle SOC reception */
@@ -316,14 +315,16 @@ INLINE void CardSniffInit(void) {
     CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_DIV1_gc; /* Clocked at 27.12 MHz */
     CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH2_gc; /* Restart this timer on every event on channel 2 (pulse detected by AC) */
     CODEC_TIMER_LOADMOD.PER = 27120; /* 1000 us card response timeout */
-    CODEC_TIMER_LOADMOD.CCA = 512; /* Half-bit period */
+    CODEC_TIMER_LOADMOD.CCA = 512 - 10 - 18; /* Half-bit period - 10 clock cycles for shared ISR compensation - 14 for hardware ISR call itself */
     CODEC_TIMER_LOADMOD.CCB = 64; /* Single pulse width */
-    CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_OFF_gc;
-    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc;
+    CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow (SOF timeout) interrupt */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc; /* Keep interrupt disabled, they will be enabled later on */
     CODEC_TIMER_LOADMOD.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer */
 
     /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
+    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* First half-bit */
     isr_func_CODEC_TIMER_LOADMOD_CCB_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT; /* Handle spurious SOC (noise) detection */
+    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout; /* VICC SOC timeout */
 
     /**
      * Get current signal amplitude and record it as "silence"
@@ -331,24 +332,16 @@ INLINE void CardSniffInit(void) {
      * This can't be moved closer to ADC configuration since the ADC has to be populated with valid
      * values and it takes 7*4 clock cycles to do so (7 ADC stages * 4 ADC clock prescaler)
      */
-    ReaderFloorNoiseLevel = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET; /* PORTA Pin 7 (DEMOD-READER/2.3C) - CPU pin 3/5 */
     DemodFloorNoiseLevel = ADCA.CH2RES - ANTENNA_LEVEL_OFFSET; /* PORTA Pin 2 (DEMOD/2.3C) - CPU pin 7 */
     for (uint8_t i = 0; i < 7; i++) { /* Add 7 more values */
-        ReaderFloorNoiseLevel += ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
         DemodFloorNoiseLevel += ADCA.CH2RES - ANTENNA_LEVEL_OFFSET;
     }
-    ReaderFloorNoiseLevel >>= 3; /* Get the average dividing by 8 */
     DemodFloorNoiseLevel >>= 3;
-    FloorNoiseLevelDelta = ReaderFloorNoiseLevel - DemodFloorNoiseLevel;
     /**
      * Typical values with my CR95HF reader:
-     * ReaderFloorNoiseLevel: ~1500
+     * ReaderFloorNoiseLevel: ~1500 (measured on ADCA.CH1RES)
      * DemodFloorNoiseLevel: ~900
     */
-
-    // char tmpBuf[20]; // TODO remove
-    // snprintf(tmpBuf, 20, "RDR %d DMD %d", ReaderFloorNoiseLevel, DemodFloorNoiseLevel);
-    // TerminalSendString(tmpBuf);
 
     DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Slightly increase DAC output to ease triggering */
 
@@ -392,40 +385,25 @@ INLINE void CardSniffDeinit(void) {
  */
 ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTSET = PIN0_bm;
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_OFF_gc; /* Disable this interrupt */
 
-    /* Update DAC output (AC positive comparation threshold) with higher threshold to reduce noise until a new appropriate value is sampled from the antenna */
-    // uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
-    // if ((temp_read << 1) + (temp_read >> 1) > 0xfff) { /* Naive overflow check */
-    //     DACB.CH0DATA = 0xfff;
-    // } else {
-    //     DACB.CH0DATA = (temp_read << 1)  + (temp_read >> 1); /* DAC output will be further increased after 2 and 5 pulses */
-    // }
     DACB.CH0DATA = (DemodFloorNoiseLevel << 1) - (DemodFloorNoiseLevel >> 2); /* Blindly increase threshold after 1 pulse */
     /* Note: by the time the DAC has changed its value, we're already after peak 2 */
 
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_HI_gc; /* Enable level 0 CCB interrupt to filter spurious pulses */
+}
 
-    /**
-     * Update threshold with current pulses amplitude from the ADC.
-     * Data in the ADC is not updated to *current* value, but is lagging behind by
-     * 7*4 clock cycles (7 ADC pipeline stages * 4 clock prescaler), so we're updating
-     * with outdated data. This is nonetheless needed to increase sensitivity once
-     * a first peak has been found to not miss any pulse.
-     * The thresholdwill be overwritten with a more updated value once we reach
-     * the third pulse thanks to CODEC_TIMER_TIMESTAMPS.CCA being = 3.
-     */
+/**
+ * This interrupt is called on the first half-bit
+ */
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    // ADCA.CMP = temp_read; /* Save as threshold for ADC interrupt as well */
-    // ADCA.CH1.INTCTRL = ADC_CH_INTMODE_BELOW_gc | ADC_CH_INTLVL_HI_gc; /* Finally enable ADC channel 1 compare interrupt when value falls below threshold */
-
-    // TODO remove this temporary code: setting up DAC channel 1
-    // DACB.CTRLB = DAC_CHSEL_DUAL_gc;
-    // DACB.CTRLA |= DAC_CH1EN_bm;
-    // DACB.CH1DATA = DACB.CH0DATA; /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
+    PORTE.OUT = (CODEC_TIMER_TIMESTAMPS.CNT > 2); /* Theoretically we should shift this, but since we're writing PIN0, no need to shift by 0 (<< PIN0_bp) */
+    /* Using 2 as a discriminating factor to allow for slight errors in pulses counting. */
+    CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear count register for next half-bit */
 }
 
 /**
@@ -434,44 +412,43 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
  * Classical scenario: spurious pulse detected as SOC start.
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
-
-    // TODO count global failed matches, after X matches increase threshold slightly by a fixed amount or sense floor noise level again.
-
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTCLR = PIN0_bm;
+    asm("nop");
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    asm("nop");
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
-    DACB.CH1DATA = DACB.CH0DATA; /* Restore */ // TODO remove this testing DAC channel 1 output
 
     ACA.AC0CTRL |= AC_INTLVL_HI_gc; /* Re-enable analog comparator interrupt to search for another pulse */
 
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc | TC_CCBINTLVL_HI_gc; /* Re enable CCA/CCB interrupt in case they were triggered and are now disabled */
     CODEC_TIMER_TIMESTAMPS.CTRLFSET = TC_CMD_RESTART_gc; /* Clear pulses counter (we received garbage) */
 
     CODEC_TIMER_LOADMOD.INTCTRLB &= TC_CCBINTLVL_OFF_gc; /* Disable this interrupt */
-
-    // char tmpBuf[30]; // TODO remove
-    // snprintf(tmpBuf, 30, "CCB CNT: %d\n", CODEC_TIMER_TIMESTAMPS.CNT);
-    // TerminalSendString(tmpBuf);
 }
 
-
-
+/**
+ * This interrupt handles the VICC SOF timeout when the card does not answer
+ * and restarts reader sniffing
+ * 
+ * It will be replaced by isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode once
+ * a SOF is received
+ */
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout(void) {
+    // TODO restart reader sniffing
+}
 
 /**
- * This interrupt is called after the first continuous 24 pulses (SOC).
- * The upcoming pause and 8 pulses (logic 1) in SOC will be handled as a normal logic 1 bit.
+ * This interrupt is called on the second bit-half to decode it.
+ * It replaces isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout once the SOF is received
  */
-ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_OFF_gc; /* Disable CCB pulse timer */
-
-    CODEC_TIMER_TIMESTAMPS.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Disable this interrupt */
-
-    // char tmpBuf[30]; // TODO remove
-    // snprintf(tmpBuf, 30, "RDR %d DMD %d CRR_TR %d\n", ReaderFloorNoiseLevel, DemodFloorNoiseLevel, DACB.CH0DATA);
-    // TerminalSendString(tmpBuf);
+    PORTE.OUT = (CODEC_TIMER_TIMESTAMPS.CNT > 2); /* Theoretically we should shift this, but since we're writing PIN0, no need to shift by 0 (<< PIN0_bp) */
+    /* Using 2 as a discriminating factor to allow for slight errors in pulses counting. */
+    CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear count register for next half-bit */
 }
 
 
@@ -479,8 +456,8 @@ ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
  * This interrupt is called after 3 subcarrier pulses and increases the threshold
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
     if (temp_read > 0xfff) { /* Naive overflow check */
@@ -488,7 +465,8 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
     } else {
         DACB.CH0DATA = temp_read; /* Further increase DAC output after 3 pulses */
     }
-    DACB.CH1DATA = DACB.CH0DATA;
+
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB &= TC_CCAINTLVL_OFF_gc; /* Disable this interrupt */
 
     // char tmpBuf[20]; // TODO remove
     // snprintf(tmpBuf, 20, "CH0 %d", DACB.CH0DATA);
@@ -499,8 +477,8 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
  * This interrupt is called after 5 subcarrier pulses and increases the threshold even more
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     uint16_t temp_read = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET;
     if (temp_read + (temp_read >> 2) + (temp_read >> 3) > 0xfff) { /* Naive overflow check */
@@ -509,14 +487,31 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void) {
         DACB.CH0DATA = temp_read + (temp_read >> 2) + (temp_read >> 3); /* Further increase DAC output after 5 pulses */
     }
 
-    DACB.CTRLB = DAC_CHSEL_SINGLE_gc;
-    // DACB.CTRLB = DAC_CHSEL_DUAL_gc;
-    DACB.CTRLA |= DAC_CH1EN_bm;
-    DACB.CH1DATA = DACB.CH0DATA; /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB &= TC_CCBINTLVL_OFF_gc; /* Disable this interrupt */
 
     // char tmpBuf[20]; // TODO remove
     // snprintf(tmpBuf, 20, "CH0 %d", DACB.CH0DATA);
     // TerminalSendString(tmpBuf);
+}
+
+/**
+ * This interrupt is called after the first continuous 24 pulses (SOC).
+ * The upcoming pause and 8 pulses (logic 1) in SOC will be handled as a normal logic 1 bit.
+ */
+ISR(CODEC_TIMER_TIMESTAMPS_OVF_VECT) {
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
+    /* Enable CCA (first half-bit decoding), disable CCB (spurious pulse timeout) */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_HI_gc | TC_CCBINTLVL_OFF_gc;
+    /* Disable timer resetting on every AC0 event */
+    CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_OFF_gc;
+    /* Change CODEC_TIMER_LOADMOD period to one full logic bit length */
+    CODEC_TIMER_LOADMOD.PER = 1024 + 26; /* First period is slightly longer to accomodate for this interrupt, which is triggered slightly earlier than it should have  */
+    CODEC_TIMER_LOADMOD.PERBUF = 1024; /* Store actual period in buffered register (it will be used once this period is over) */
+    /* Update overflow handler to bit decode function */
+    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode;
+
+    CODEC_TIMER_TIMESTAMPS.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Disable this interrupt */
 }
 
 
