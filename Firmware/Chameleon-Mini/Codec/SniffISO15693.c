@@ -272,12 +272,22 @@ INLINE void CardSniffInit(void) {
     ADCA.CH2.CTRL = ADC_CH_INPUTMODE_SINGLEENDED_gc; /* Single-ended input, no gain */
 
     /**
+     * CODEC_READER_TIMER will now be used to timeout VICC sniffing if no data is received before period overflow.
+     * The overflow interrupt has to be manually deactivated once meaningful data is received, no events will clear it.
+     *
+     * PER = maximum card wait time (1500 us).
+     */
+    CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_DIV256_gc; /* Clocked at 1/256 CPU clock */
+    CODEC_TIMER_SAMPLING.PER = 160; /* ~1500 us card response timeout */
+    CODEC_TIMER_SAMPLING.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow (SOF timeout) interrupt */
+    CODEC_TIMER_SAMPLING.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer once it has been configured */ // TODO is this a problem when sniffing multiple frames?
+
+    /**
      * CODEC_TIMER_TIMESTAMPS (TCD1) will be used to count the peaks identified by ACA while sniffing VICC data
      *
      * CCA = 3 pulses, to update the threshold to a more suitable value for upcoming pulses
      */
-    // TODO stop using this timer as a counter (not needed): move thresh update to CODEC_TIMER_LOADMOD and use this as a timeout
-    // TODO remove shared interrupt CCA/CCB
+    // TODO unshare interrupt CODEC_TIMER_TIMESTAMPS CCB
     CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
     CODEC_TIMER_TIMESTAMPS.CCA = 3;
     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable CCA interrupt */
@@ -288,18 +298,25 @@ INLINE void CardSniffInit(void) {
 
     /**
      * CODEC_TIMER_LOADMOD (TCE0) has multiple usages:
-     *  - Period overflow handles:
-     *      - SOC timeout - until the SOC has been received
-     *      - Second half-bit (called 37,76 us after bit start) - while decoding data
-     *  - Compare channel A samples the first half-bit (called 18,88 us after bit start) - while decoding data
-     *  - Compare channel B filters erroneous VICC->VCD SOC identification - until the SOF has been received
+     *  - Period overflow samples second half-bit (called 37,76 us after bit start) - while decoding data
+     *  - Compare channel A:
+     *      - filters erroneous VICC->VCD SOC identification
+     *      - prepares the codec for data demodulation when a SOF is found
+     *  - Compare channel C samples the first half-bit (called 18,88 us after bit start) - while decoding data
      *
      * It is restarted on every event on event channel 2 until the first 24 pulses of the SOC have been received.
-     * This is needed to filter out spurious pulses via CCA. In fact, when CCA is called, it means we are
-     * not receiving a pulse train, but just some noise in the field. When receiving a pulse train, this timer
-     * will be restarted BEFORE the 64 clock cycles expire, thus CCA won't be called at all as long as we're
-     * still receiving pulses. Once 24 pulses have been received, then finally CCA can be disabled (no need to
-     * filter anymore) and restart itself can be disabled to scan every data bit.
+     *
+     * Interrupt on compare channel A will be called every 64 clock cycles, unless this timer is reset by a new
+     * pulse. This means that interrupt on CCA will be called after some pulses, be it one or more.
+     * When CCA is called and we have received too few pulses, it was just noise on the field, so we have to start
+     * searching again for a SOF. On the other hand, if we received multiple pulses, we can finally start demodulation.
+     * Also, compare channel A can then be disabled.
+     *
+     * Interrupt on compare channel C will be called after the first half-bit and will save it in the samples register.
+     *
+     * Overflow interrupt will be called after the second half-bit and will save it in the samples register.
+     * Every 16 half-bits, this will also convert the samples to a byte and store it in the codec buffer.
+     * It will also check for EOF to stop card decoding.
      *
      * PER = maximum card wait time (1000 us). If no data recived by this moment, restart sampling reader data
      * CCA = duration of a single pulse (2,36 us: half hi + half low)
@@ -307,16 +324,20 @@ INLINE void CardSniffInit(void) {
      */
     CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_DIV1_gc; /* Clocked at 27.12 MHz */
     CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH2_gc; /* Restart this timer on every event on channel 2 (pulse detected by AC) */
-    CODEC_TIMER_LOADMOD.PER = 27120; /* 1000 us card response timeout */
+
+    /* Change CODEC_TIMER_LOADMOD period to one full logic bit length */
+    CODEC_TIMER_LOADMOD.PER = 1024 - 8; /* One full logic bit duration, slightly shorter on first run to make room for SOC detection algoritm */
+    CODEC_TIMER_LOADMOD.PERBUF = 1024 - 1; /* One full logic bit duration - 1 (accommodate for small clock drift) */
     CODEC_TIMER_LOADMOD.CCA = 64; /* Single pulse width */
-    CODEC_TIMER_LOADMOD.CCC = 512 - 10 - 18; /* Half-bit period - 10 clock cycles for shared ISR compensation - 18 to hit right half-bit (checked with scope) */
+    CODEC_TIMER_LOADMOD.CCC = 512 - 8; /* Same as PER, use a slightly shorter CCC period on first run */
+    CODEC_TIMER_LOADMOD.CCCBUF = 512; /* After first CCC, use actual CCC period (will be written when UPDATE condition is met, thus after first period hit) */
     CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow (SOF timeout) interrupt */
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc | TC_CCCINTLVL_OFF_gc; /* Keep interrupt disabled, they will be enabled later on */
     CODEC_TIMER_LOADMOD.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer */
 
     /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
     isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* Handle spurious SOC (noise) detection */
-    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout; /* VICC SOC timeout */
+    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT; /* VICC SOC timeout */
 
     /**
      * Get current signal amplitude and record it as "silence"
@@ -373,6 +394,9 @@ INLINE void CardSniffDeinit(void) {
     // TODO disable event system
 
     // TODO disable all other interrupts
+
+    /* Stop CODEC_TIMER_SAMPLING timer */
+    CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_OFF_gc;
 
     /* Reset ACA AC0 to default setting */
     ACA.AC0MUXCTRL = AC_MUXPOS_DAC_gc | AC_MUXNEG_PIN7_gc; /* This actually was unchanged */
@@ -433,21 +457,14 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
 
         CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Re enable CCA interrupt in case it was triggered and then is now disabled */
     } else {
-        /* Got actual SOF, prepare interrupts for data demodulation */
+        /**
+         * Received a lot of pulses, we can assume it was the SOF, prepare interrupts for data demodulation.
+         * Data demodulation interrupt will take care of checking if we receive the two remaining half-bits
+         * of the sof and will then convalidate that these pulses were actually part of the SOF
+         */
 
         CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCCINTLVL_HI_gc; /* Enable CCC (first half-bit decoding), disable CCA (spurious pulse timeout) */
         CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_OFF_gc; /* Disable timer resetting on every AC0 event */
-
-        /* Change CODEC_TIMER_LOADMOD to compensate for delay */
-        CODEC_TIMER_LOADMOD.CCC = 512 - 8; /* First CCC is slightly shorter to accommodate for this interrupt, which is triggered 64 clock cycles after SOC ends */
-        CODEC_TIMER_LOADMOD.CCCBUF = 512; /* After first CCC, use actual CCC period (will be written when UPDATE condition is met, thus after first period hit) */
-
-        /* Change CODEC_TIMER_LOADMOD period to one full logic bit length */
-        CODEC_TIMER_LOADMOD.PER = 1024 - 8; /* One full logic bit duration */
-        CODEC_TIMER_LOADMOD.PERBUF = 1024 - 1; /* One full logic bit duration - 1 (accommodate for slight clock drift) */
-
-        /* Change overflow handler to bit decode function */
-        isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode;
 
         /**
          * Prepare registers for data demodulation
@@ -460,13 +477,15 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
         StateRegister = DEMOD_VICC_SOC_STATE;
     }
 
-    CODEC_TIMER_TIMESTAMPS.CTRLFSET = TC_CMD_RESTART_gc; /* Clear pulses counter nonetheless */
+    CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear pulses counter nonetheless */
 }
 
 /**
  * This interrupt is called on the first half-bit
  */
 ISR(CODEC_TIMER_LOADMOD_CCC_VECT) {
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     /**
      * This interrupt is called on every odd half-bit, thus we don't need to do any check,
      * just append to the sample register.
@@ -484,17 +503,17 @@ ISR(CODEC_TIMER_LOADMOD_CCC_VECT) {
  * It will be replaced by isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode once
  * a SOF is received
  */
-ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout(void) {
-    // TODO DO NOT USE THIS INTERRUPT
-    // This is being reset every pulse, thus continuous noise (threshold too low) would make it restart forever, losing all future comms
-    // Need to setup yet another timer to count to 27120
+ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
+    CODEC_TIMER_SAMPLING.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Disable this interrupt */
 }
 
 /**
  * This interrupt is called on the second bit-half to decode it.
  * It replaces isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout once the SOF is received
  */
-ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
@@ -516,10 +535,12 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
         switch (StateRegister) {
             case DEMOD_VICC_SOC_STATE:
                 if (SampleRegister == VICC_SOC_CODE) {
+                    /* We've actually received a SOF after the previous (mostly unknown) pulses */
+                    CODEC_TIMER_SAMPLING.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Disable VICC SOF timeout handler */
                     StateRegister = DEMOD_VICC_DATA;
                 } else { // No SOC. Restart and try again, we probably received garbage.
-                    Flags.ReaderDemodFinished = 1;
-                    Flags.CardDemodFinished = 1;
+                    Flags.ReaderDemodFinished = 1; // TODO reader demod finished?
+                    Flags.CardDemodFinished = 1; // TODO card demod finished? I'd say neither
 
                     // TODO disable interrupts and cleanup to start VICC data reception again
                     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
@@ -590,7 +611,7 @@ void StartSniffISO15693Demod(void) {
 
     /* Configure sampling-timer free running and sync to first modulation-pause. */
     /* Resets the counter to 0 */
-    CODEC_TIMER_SAMPLING.CNT = 0;
+    CODEC_TIMER_TIMESTAMPS.CNT = 0;
     /* Set the period for CODEC_TIMER_SAMPLING (TCD0) to ISO15693_READER_SAMPLE_PERIOD - 1 because PER is 0-based */
     CODEC_TIMER_SAMPLING.PER = ISO15693_READER_SAMPLE_PERIOD - 1;
     /* Set Counter Channel C (CCC) register with half bit period - 1. (- 14 to compensate ISR timing overhead) */
