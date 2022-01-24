@@ -11,31 +11,29 @@
 #include "../Application/Application.h"
 #include "LEDHook.h"
 #include "AntennaLevel.h"
-#include "Terminal/Terminal.h"
+#include "Terminal/Terminal.h" // TODO_sniff remove
 
 
-#define SOC_1_OF_4_CODE         0x7B
-#define SOC_1_OF_256_CODE       0x7E
-#define SOC_ONE_SUBCARRIER      0xFF
-#define SOC_TWO_SUBCARRIER      0x1FF
-#define EOC_CODE                0xDF
+#define VCD_SOC_1_OF_4_CODE         0x7B
+#define VCD_SOC_1_OF_256_CODE       0x7E
+#define VCD_EOC_CODE                0xDF
+#define VICC_SOC_CODE               0b00011101 /* = 0x1D 3 unmodulated periods, 3 modulated periods, 1 unmodulated, 1 modulated */
+#define VICC_EOC_CODE               0b10111000 /* = 0xB8 1 modulated period, 1 unmodulated period, 3 modulated, 3 unmodulated */
 #define ISO15693_READER_SAMPLE_CLK      TC_CLKSEL_DIV2_gc // 13.56MHz
 #define ISO15693_READER_SAMPLE_PERIOD   128 // 9.4us
 #define ISO15693_CARD_SAMPLE_CLK        TC_CLKSEL_DIV4_gc /* Max possible sampling resolution */
 #define ISO15693_CARD_SAMPLE_PERIOD     148 // 18.5us
 
-#define SUBCARRIER_1            32
-#define SUBCARRIER_2            28
-#define SUBCARRIER_OFF          0
-
 // These registers provide quick access but are limited
 // so global vars will be necessary
 #define DataRegister            Codec8Reg0
-// #define StateRegister           Codec8Reg1
+#define StateRegister           Codec8Reg1
 #define ModulationPauseCount    Codec8Reg2
 #define BitSampleCount          Codec8Reg3 /* Store the amount of received half-bits */
-#define SampleRegister          CodecCount16Register1 /* Store a byte of logical bits, 16 half-bits */
-#define FloorNoiseLevelDelta    CodecCount16Register2 /* Use register because it will be subtracted from every ADC reading */
+#define SampleRegister          CodecCount16Register1
+#define SampleRegisterH         GPIOR4 /* CodecCount16Register1 is the composition of GPIOR4 and GPIOR5, divide them for easier read access */
+#define SampleRegisterL         GPIOR5
+// #define FloorNoiseLevelDelta    CodecCount16Register2
 #define CodecBufferPtr          CodecPtrRegister1
 
 static volatile struct {
@@ -44,16 +42,20 @@ static volatile struct {
 } Flags = { 0 };
 
 typedef enum {
-    DEMOD_SOC_STATE,
-    DEMOD_1_OUT_OF_4_STATE,
-    DEMOD_1_OUT_OF_256_STATE
-} DemodStateType;
+    DEMOD_VCD_SOC_STATE,
+    DEMOD_VCD_1_OUT_OF_4_STATE,
+    DEMOD_VCD_1_OUT_OF_256_STATE,
+    DEMOD_VICC_SOC_STATE,
+    DEMOD_VICC_DATA,
+} DemodSniffStateType;
 
 static volatile uint16_t DemodFloorNoiseLevel;
 
-static volatile DemodStateType DemodState;
+static volatile DemodSniffStateType DemodState;
 static volatile uint8_t ShiftRegister;
 static volatile uint8_t ByteCount;
+static volatile uint8_t ReaderByteCount;
+static volatile uint8_t CardByteCount;
 static volatile uint8_t bDualSubcarrier;
 static volatile uint16_t DemodByteCount;
 static volatile uint16_t SampleDataCount;
@@ -98,13 +100,13 @@ ISR_SHARED SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
     if (++BitSampleCount == 8) {
         BitSampleCount = 0;
         switch (DemodState) {
-            case DEMOD_SOC_STATE:
-                if (SampleRegister == SOC_1_OF_4_CODE) {
-                    DemodState = DEMOD_1_OUT_OF_4_STATE;
+            case DEMOD_VCD_SOC_STATE:
+                if (SampleRegister == VCD_SOC_1_OF_4_CODE) {
+                    DemodState = DEMOD_VCD_1_OUT_OF_4_STATE;
                     SampleDataCount = 0;
                     ModulationPauseCount = 0;
-                } else if (SampleRegister == SOC_1_OF_256_CODE) {
-                    DemodState = DEMOD_1_OUT_OF_256_STATE;
+                } else if (SampleRegister == VCD_SOC_1_OF_256_CODE) {
+                    DemodState = DEMOD_VCD_1_OUT_OF_256_STATE;
                     SampleDataCount = 0;
                 } else { // No SOC. Restart and try again, we probably received garbage.
                     Flags.ReaderDemodFinished = 1;
@@ -116,8 +118,8 @@ ISR_SHARED SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
                 }
                 break;
 
-            case DEMOD_1_OUT_OF_4_STATE:
-                if (SampleRegister == EOC_CODE) {
+            case DEMOD_VCD_1_OUT_OF_4_STATE:
+                if (SampleRegister == VCD_EOC_CODE) {
                     SNIFF_ISO15693_READER_EOC_VCD();
                 } else {
                     uint8_t SampleData = ~SampleRegister;
@@ -154,8 +156,8 @@ ISR_SHARED SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
                 }
                 break;
 
-            case DEMOD_1_OUT_OF_256_STATE:
-                if (SampleRegister == EOC_CODE) {
+            case DEMOD_VCD_1_OUT_OF_256_STATE:
+                if (SampleRegister == VCD_EOC_CODE) {
                     SNIFF_ISO15693_READER_EOC_VCD();
                 } else {
                     uint8_t Position = ((SampleDataCount / 2) % 256) - 1;
@@ -202,6 +204,16 @@ ISR_SHARED SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
 INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
     /* Mark reader data as received */
     Flags.ReaderDemodFinished = 1;
+    ReaderByteCount = ByteCount; /* Copy to direction-specific variable */
+
+    /* Sets timer off for TCD0, disabling clock source. We're done receiving data from reader and don't need to probe the antenna anymore - From 14.12.1 [8331F–AVR–04/2013] */
+    CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_OFF_gc;
+    /* Disable event action for CODEC_TIMER_SAMPLING (TCD0) - From 14.12.4 [8331F–AVR–04/2013] */
+    CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_OFF_gc;
+    /* Disable compare/capture interrupts on Channel C - From 14.12.7 [8331F–AVR–04/2013] */
+    CODEC_TIMER_SAMPLING.INTCTRLB = TC_CCCINTLVL_OFF_gc;
+    /* Clear Compare Channel C (CCC) interrupt Flags - From 14.12.10 [8331F–AVR–04/2013] */
+    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
 
     /* And initialize VICC->VCD sniffer */
     CardSniffInit(); // TODO_sniff can this be moved to CodecTask or would it be too slow and we'd loose some bits?
@@ -344,6 +356,10 @@ INLINE void CardSniffInit(void) {
     /* Hysteresis is not actually needed, but appeared to be working and sounds like it might be more robust */
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_HI_gc;
 
+    /* Reinit state variables */
+    CodecBufferPtr = CodecBuffer;
+    ByteCount = 0; // TODO use register?
+
     /* This function ends ~116 us after last VCD pulse, still in the 300 us period given by ISO15693 section 8.5 */
 }
 
@@ -372,7 +388,7 @@ INLINE void CardSniffDeinit(void) {
  */
 ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_HI_gc; /* Enable level 0 CCB interrupt to filter spurious pulses and find SOC */
 
@@ -386,8 +402,8 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
  * This interrupt is called after 3 subcarrier pulses and increases the threshold
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     DACB.CH0DATA = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET; /* Further increase DAC output after 3 pulses with value from PORTA Pin 2 (DEMOD-READER/2.3) */
 
@@ -398,53 +414,67 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
  * This interrupt is called on the first half-bit
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    /**
+     * This interrupt is called on every odd half-bit, thus we don't need to do any check,
+     * just appen to the sample register and increment number of received bits.
+     */
+    SampleRegister = (SampleRegister << 1) | (CODEC_TIMER_TIMESTAMPS.CNT > 4); /* Using 3 as a discriminating factor to allow for slight errors in pulses counting. */
+    /* Don't increase BitSampleCount, since this is only the first half of a bit */
 
-    PORTE.OUT = (CODEC_TIMER_TIMESTAMPS.CNT > 2); /* Theoretically we should shift this, but since we're writing PIN0, no need to shift by 0 (<< PIN0_bp) */
-    /* Using 2 as a discriminating factor to allow for slight errors in pulses counting. */
     CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear count register for next half-bit */
 }
 
 /**
  * This interrupt is called every 64 clock cycles (= once per pulse) unless the timer is reset.
  * This means it will be invoked only if, after a pulse, we don't receive another one.
- * 
+ *
  * This will either find a noise or the end of the SOC. If we've received noise, most likely,
  * we received few pulses. The soc is made of 24 pulses, so if VICC modulation actually started,
  * we should have a relevant number of pulses
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-
-    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_OFF_gc; /* Disable all compare interrupts, including this one */
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     if (CODEC_TIMER_TIMESTAMPS.CNT < 15) {
         /* We most likely received garbage */
+
+        CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_OFF_gc; /* Disable all compare interrupts, including this one */
 
         // DemodFloorNoiseLevel += CODEC_THRESHOLD_CALIBRATE_STEPS; /* Slightly increase DAC output value */ // TODO check if this actually helps or is a trouble with low signals
 
         DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
         ACA.AC0CTRL |= AC_INTLVL_HI_gc; /* Re-enable analog comparator interrupt to search for another pulse */
 
-        CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Re enable CCA/CCB interrupt in case they were triggered and are now disabled */
+        CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Re enable CCA interrupt in case it was triggered and then is now disabled */
     } else {
         /* Got actual data, prepare for sniffing */
 
-        PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+        // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
         /* Enable CCA (first half-bit decoding), disable CCB (spurious pulse timeout) */
-        CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_HI_gc | TC_CCBINTLVL_OFF_gc;
+        CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_HI_gc;
         /* Disable timer resetting on every AC0 event */
         CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_OFF_gc;
         /* Change CODEC_TIMER_LOADMOD to compensate for delay */
-        CODEC_TIMER_LOADMOD.CCA = 512 - 64; /* First CCA is shorter to accomodate for this interrupt, which is triggered 64 clock cycles after SOC ends */
+        CODEC_TIMER_LOADMOD.CCA = 512 - 8; /* First CCA is slightly shorter to accommodate for this interrupt, which is triggered 64 clock cycles after SOC ends */
         CODEC_TIMER_LOADMOD.CCABUF = 512; /* After first CCA, use actual CCA period (will be written when UPDATE condition is met, thus after first period hit) */
         /* Change CODEC_TIMER_LOADMOD period to one full logic bit length */
-        CODEC_TIMER_LOADMOD.PER = 1024; /* One full logic bit duration */
+        CODEC_TIMER_LOADMOD.PER = 1024 - 8; /* One full logic bit duration */
+        CODEC_TIMER_LOADMOD.PERBUF = 1024 - 1; /* One full logic bit duration - 1 (accommodate for slight clock drift) */
         /* Change overflow handler to bit decode function */
         isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode;
+
+        /**
+         * Prepare registers for actual data demodulation
+         * This is a bit like cheating. Since we assume this is a real SOC, we can pretend we've already received
+         * the first 3 unmodulated and 3 modulated periods (binary: 0b000111). The two remaining periods (0b01) will be
+         * shifted in while data decoding.
+         */
+        SampleRegister = 0x07; /* = 0b000111 */
+        BitSampleCount = 4 + 3; /* Pretend we've already received 8 empty half-bits and the above 6 half-bits */
+        StateRegister = DEMOD_VICC_SOC_STATE;
+        // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     }
 
     CODEC_TIMER_TIMESTAMPS.CTRLFSET = TC_CMD_RESTART_gc; /* Clear pulses counter nonetheless */
@@ -468,12 +498,63 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout(void) {
  * It replaces isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout once the SOF is received
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    PORTE.OUT = (CODEC_TIMER_TIMESTAMPS.CNT > 2); /* Theoretically we should shift this, but since we're writing PIN0, no need to shift by 0 (<< PIN0_bp) */
-    /* Using 2 as a discriminating factor to allow for slight errors in pulses counting. */
+
+    /**
+     * This interrupt is called on every even half-bit, we then need to check the content of the register
+     */
+    SampleRegister = (SampleRegister << 1) | (CODEC_TIMER_TIMESTAMPS.CNT > 4); /* Using 3 as a discriminating factor to allow for slight errors in pulses counting. */
+    BitSampleCount++;
     CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear count register for next half-bit */
+
+    // char tmpBuf[10];
+    // snprintf(tmpBuf, 10, "BSC: %d\n", BitSampleCount);
+    // TerminalSendString(tmpBuf);
+
+    if (BitSampleCount == 8) { /* We have 16 half-bits in SampleRegister at this point */
+        BitSampleCount = 0;
+
+        switch (StateRegister) {
+            case DEMOD_VICC_SOC_STATE:
+                if (SampleRegister == VICC_SOC_CODE) {
+                    StateRegister = DEMOD_VICC_DATA;
+                } else { // No SOC. Restart and try again, we probably received garbage.
+                    Flags.ReaderDemodFinished = 1;
+                    Flags.CardDemodFinished = 1;
+
+                    // TODO disable interrupts and cleanup to start VICC data reception again
+                    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+                    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+                }
+
+                break;
+            case DEMOD_VICC_DATA:
+                if (SampleRegisterL == VICC_EOC_CODE) {
+                    Flags.CardDemodFinished = 1;
+                    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
+                    CardByteCount = ByteCount; /* Copy to direction-specific variable */
+
+                    // TODO disable everything sniff, restart reader
+                } else {
+                    DataRegister  = ( (SampleRegisterL & 0b00000011) == 0b00000001) << 3;
+                    DataRegister |= ( (SampleRegisterL & 0b00001100) == 0b00000100) << 2;
+                    DataRegister |= ( (SampleRegisterL & 0b00110000) == 0b00010000) << 1;
+                    DataRegister |= ( (SampleRegisterL & 0b11000000) == 0b01000000); /* Bottom 2 bits */
+                    DataRegister |= ( (SampleRegisterH & 0b00000011) == 0b00000001) << 7;
+                    DataRegister |= ( (SampleRegisterH & 0b00001100) == 0b00000100) << 6;
+                    DataRegister |= ( (SampleRegisterH & 0b00110000) == 0b00010000) << 5;
+                    DataRegister |= ( (SampleRegisterH & 0b11000000) == 0b01000000) << 4;
+
+                    *CodecBufferPtr = DataRegister;
+                    CodecBufferPtr++;
+                    ByteCount++;
+                }
+        }
+    }
+
 }
 
 
@@ -498,7 +579,7 @@ void StartSniffISO15693Demod(void) {
     CodecBufferPtr = CodecBuffer;
     Flags.ReaderDemodFinished = 0;
     Flags.CardDemodFinished = 0;
-    DemodState = DEMOD_SOC_STATE;
+    DemodState = DEMOD_VCD_SOC_STATE;
     DataRegister = 0;
     SampleRegister = 0;
     BitSampleCount = 0;
@@ -557,8 +638,6 @@ void StartSniffISO15693Demod(void) {
 void SniffISO15693CodecInit(void) {
     // TODO_sniff temp code start
     PORTE.DIR = PIN0_bm;
-    CodecThresholdReset(); // TODO_sniff do we need this?
-
     // TODO_sniff temp code end
 
     CodecInitCommon();
@@ -587,7 +666,7 @@ void SniffISO15693CodecDeInit(void) {
     CodecBufferPtr = CodecBuffer;
     Flags.ReaderDemodFinished = 0;
     Flags.CardDemodFinished = 0;
-    DemodState = DEMOD_SOC_STATE;
+    DemodState = DEMOD_VCD_SOC_STATE;
     DataRegister = 0;
     SampleRegister = 0;
     BitSampleCount = 0;
@@ -615,10 +694,9 @@ void SniffISO15693CodecDeInit(void) {
 
 void SniffISO15693CodecTask(void) {
     if (Flags.ReaderDemodFinished) {
-
         Flags.ReaderDemodFinished = 0;
 
-        DemodByteCount = ByteCount;
+        DemodByteCount = ReaderByteCount;
         bDualSubcarrier = 0;
 
         if (DemodByteCount > 0) {
@@ -628,15 +706,21 @@ void SniffISO15693CodecTask(void) {
             if (CodecBuffer[0] & ISO15693_REQ_SUBCARRIER_DUAL) {
                 bDualSubcarrier = 1;
             }
-            // TODO enable card demodulation
-            // TODO set DemodState as DEMOD_SOC_STATE
-
         }
 
     }
 
     if(Flags.CardDemodFinished) {
         Flags.CardDemodFinished = 0;
+
+        DemodByteCount = CardByteCount;
+
+        if (DemodByteCount > 0) {
+            LogEntry(LOG_INFO_CODEC_SNI_CARD_DATA, CodecBuffer, DemodByteCount);
+            LEDHook(LED_CODEC_RX, LED_PULSE);
+
+        }
+
         StartSniffISO15693Demod();
     }
 }
