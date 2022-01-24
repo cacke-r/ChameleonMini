@@ -142,7 +142,6 @@ void isr_Reader14443_2A_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void);
 void isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void);
 extern void (* volatile isr_func_CODEC_TIMER_TIMESTAMPS_CCB_VECT)(void); // TODO_sniff does this have to be shared? There is only one usage
 void isr_SniffISO14443_2A_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void);
-void isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCB_VECT(void);
 extern void (* volatile isr_func_ACA_AC0_vect)(void);
 void isr_SniffISO14443_2A_ACA_AC0_VECT(void);
 void isr_SNIFF_ISO15693_ACA_AC0_VECT(void);
