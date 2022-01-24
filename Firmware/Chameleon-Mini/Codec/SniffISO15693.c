@@ -280,7 +280,7 @@ INLINE void CardSniffInit(void) {
     // TODO remove shared interrupt CCA/CCB
     CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
     CODEC_TIMER_TIMESTAMPS.CCA = 3;
-    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable CCA/CCB interrupt */
+    CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable CCA interrupt */
     CODEC_TIMER_TIMESTAMPS.CTRLFSET = TC_CMD_RESTART_gc; /* Reset counter once it has been configured */
 
     /* Register CODEC_TIMER_TIMESTAMPS shared interrupt handlers */
@@ -295,28 +295,27 @@ INLINE void CardSniffInit(void) {
      *  - Compare channel B filters erroneous VICC->VCD SOC identification - until the SOF has been received
      *
      * It is restarted on every event on event channel 2 until the first 24 pulses of the SOC have been received.
-     * This is needed to filter out spurious pulses thanks to CCB. In fact, when CCB is called, it means we are
+     * This is needed to filter out spurious pulses via CCA. In fact, when CCA is called, it means we are
      * not receiving a pulse train, but just some noise in the field. When receiving a pulse train, this timer
-     * will be restarted BEFORE the 64 clock cycles expire, thus CCB won't be called at all as long as we're
-     * still receiving pulses. Once 24 pulses have been received, then finally CCB can be disabled (no need to
+     * will be restarted BEFORE the 64 clock cycles expire, thus CCA won't be called at all as long as we're
+     * still receiving pulses. Once 24 pulses have been received, then finally CCA can be disabled (no need to
      * filter anymore) and restart itself can be disabled to scan every data bit.
      *
      * PER = maximum card wait time (1000 us). If no data recived by this moment, restart sampling reader data
-     * CCA = half-bit duration (18,88 us)
-     * CCB = duration of a single pulse (2,36 us: half hi + half low)
+     * CCA = duration of a single pulse (2,36 us: half hi + half low)
+     * CCC = half-bit duration (18,88 us)
      */
     CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_DIV1_gc; /* Clocked at 27.12 MHz */
     CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH2_gc; /* Restart this timer on every event on channel 2 (pulse detected by AC) */
     CODEC_TIMER_LOADMOD.PER = 27120; /* 1000 us card response timeout */
-    CODEC_TIMER_LOADMOD.CCA = 512 - 10 - 18; /* Half-bit period - 10 clock cycles for shared ISR compensation - 18 to hit right half-bit (checked with scope) */
-    CODEC_TIMER_LOADMOD.CCB = 64; /* Single pulse width */
+    CODEC_TIMER_LOADMOD.CCA = 64; /* Single pulse width */
+    CODEC_TIMER_LOADMOD.CCC = 512 - 10 - 18; /* Half-bit period - 10 clock cycles for shared ISR compensation - 18 to hit right half-bit (checked with scope) */
     CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow (SOF timeout) interrupt */
-    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc; /* Keep interrupt disabled, they will be enabled later on */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc | TC_CCCINTLVL_OFF_gc; /* Keep interrupt disabled, they will be enabled later on */
     CODEC_TIMER_LOADMOD.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer */
 
     /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
-    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* First half-bit */
-    isr_func_CODEC_TIMER_LOADMOD_CCB_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT; /* Handle spurious SOC (noise) detection */
+    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* Handle spurious SOC (noise) detection */
     isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout; /* VICC SOC timeout */
 
     /**
@@ -383,14 +382,14 @@ INLINE void CardSniffDeinit(void) {
 
 /**
  * This interrupt is called on every rising edge sensed by the analog comparator
- * and it enables the spurious pulse filtering interrupt (CODEC_TIMER_LOADMOD CCB).
+ * and it enables the spurious pulse filtering interrupt (CODEC_TIMER_LOADMOD CCA).
  * If we did not receive a SOC but, indeed, noise, this interrupt will be enabled again.
  */
 ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_HI_gc; /* Enable level 0 CCB interrupt to filter spurious pulses and find SOC */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable level 0 CCA interrupt to filter spurious pulses and find SOC */
 
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_OFF_gc; /* Disable this interrupt */
 
@@ -411,20 +410,6 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
 }
 
 /**
- * This interrupt is called on the first half-bit
- */
-ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
-    /**
-     * This interrupt is called on every odd half-bit, thus we don't need to do any check,
-     * just appen to the sample register and increment number of received bits.
-     */
-    SampleRegister = (SampleRegister << 1) | (CODEC_TIMER_TIMESTAMPS.CNT > 4); /* Using 3 as a discriminating factor to allow for slight errors in pulses counting. */
-    /* Don't increase BitSampleCount, since this is only the first half of a bit */
-
-    CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear count register for next half-bit */
-}
-
-/**
  * This interrupt is called every 64 clock cycles (= once per pulse) unless the timer is reset.
  * This means it will be invoked only if, after a pulse, we don't receive another one.
  *
@@ -432,14 +417,14 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
  * we received few pulses. The soc is made of 24 pulses, so if VICC modulation actually started,
  * we should have a relevant number of pulses
  */
-ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
+ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     if (CODEC_TIMER_TIMESTAMPS.CNT < 15) {
         /* We most likely received garbage */
 
-        CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCBINTLVL_OFF_gc; /* Disable all compare interrupts, including this one */
+        CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc; /* Disable all compare interrupts, including this one */
 
         // DemodFloorNoiseLevel += CODEC_THRESHOLD_CALIBRATE_STEPS; /* Slightly increase DAC output value */ // TODO check if this actually helps or is a trouble with low signals
 
@@ -448,36 +433,48 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCB_VECT(void) {
 
         CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Re enable CCA interrupt in case it was triggered and then is now disabled */
     } else {
-        /* Got actual data, prepare for sniffing */
+        /* Got actual SOF, prepare interrupts for data demodulation */
 
-        // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+        CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCCINTLVL_HI_gc; /* Enable CCC (first half-bit decoding), disable CCA (spurious pulse timeout) */
+        CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_OFF_gc; /* Disable timer resetting on every AC0 event */
 
-        /* Enable CCA (first half-bit decoding), disable CCB (spurious pulse timeout) */
-        CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_HI_gc;
-        /* Disable timer resetting on every AC0 event */
-        CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_OFF_gc;
         /* Change CODEC_TIMER_LOADMOD to compensate for delay */
-        CODEC_TIMER_LOADMOD.CCA = 512 - 8; /* First CCA is slightly shorter to accommodate for this interrupt, which is triggered 64 clock cycles after SOC ends */
-        CODEC_TIMER_LOADMOD.CCABUF = 512; /* After first CCA, use actual CCA period (will be written when UPDATE condition is met, thus after first period hit) */
+        CODEC_TIMER_LOADMOD.CCC = 512 - 8; /* First CCC is slightly shorter to accommodate for this interrupt, which is triggered 64 clock cycles after SOC ends */
+        CODEC_TIMER_LOADMOD.CCCBUF = 512; /* After first CCC, use actual CCC period (will be written when UPDATE condition is met, thus after first period hit) */
+
         /* Change CODEC_TIMER_LOADMOD period to one full logic bit length */
         CODEC_TIMER_LOADMOD.PER = 1024 - 8; /* One full logic bit duration */
         CODEC_TIMER_LOADMOD.PERBUF = 1024 - 1; /* One full logic bit duration - 1 (accommodate for slight clock drift) */
+
         /* Change overflow handler to bit decode function */
         isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode;
 
         /**
-         * Prepare registers for actual data demodulation
-         * This is a bit like cheating. Since we assume this is a real SOC, we can pretend we've already received
-         * the first 3 unmodulated and 3 modulated periods (binary: 0b000111). The two remaining periods (0b01) will be
-         * shifted in while data decoding.
+         * Prepare registers for data demodulation
+         * This is a bit like cheating. We assumed this is a real SOC, so we can pretend we've already received
+         * the first 3 unmodulated and 3 modulated periods (binary: 0b000111) which compose the SOC.
+         * The two upcoming half-bits (0b01) will be shifted in during data decoding.
          */
-        SampleRegister = 0x07; /* = 0b000111 */
+        SampleRegister = 0b000111; /* = 0x7 */
         BitSampleCount = 4 + 3; /* Pretend we've already received 8 empty half-bits and the above 6 half-bits */
         StateRegister = DEMOD_VICC_SOC_STATE;
-        // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     }
 
     CODEC_TIMER_TIMESTAMPS.CTRLFSET = TC_CMD_RESTART_gc; /* Clear pulses counter nonetheless */
+}
+
+/**
+ * This interrupt is called on the first half-bit
+ */
+ISR(CODEC_TIMER_LOADMOD_CCC_VECT) {
+    /**
+     * This interrupt is called on every odd half-bit, thus we don't need to do any check,
+     * just append to the sample register.
+     */
+    SampleRegister = (SampleRegister << 1) | (CODEC_TIMER_TIMESTAMPS.CNT > 4); /* Using 4 as a discriminating factor to allow for slight errors in pulses counting. */
+    /* Don't increase BitSampleCount, since this is only the first half of a bit */
+
+    CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear count register for next half-bit */
 }
 
 /**
@@ -505,7 +502,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_decode(void) {
     /**
      * This interrupt is called on every even half-bit, we then need to check the content of the register
      */
-    SampleRegister = (SampleRegister << 1) | (CODEC_TIMER_TIMESTAMPS.CNT > 4); /* Using 3 as a discriminating factor to allow for slight errors in pulses counting. */
+    SampleRegister = (SampleRegister << 1) | (CODEC_TIMER_TIMESTAMPS.CNT > 4); /* Using 4 as a discriminating factor to allow for slight errors in pulses counting. */
     BitSampleCount++;
     CODEC_TIMER_TIMESTAMPS.CNT = 0; /* Clear count register for next half-bit */
 
