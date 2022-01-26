@@ -330,8 +330,8 @@ INLINE void CardSniffInit(void) {
     CODEC_TIMER_LOADMOD.CCA = 64; /* Single pulse width */
     CODEC_TIMER_LOADMOD.CCC = 512 - 8; /* Same as PER, use a slightly shorter CCC period on first run */
     CODEC_TIMER_LOADMOD.CCCBUF = 512; /* After first CCC, use actual CCC period (will be written when UPDATE condition is met, thus after first period hit) */
-    // CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow (SOF timeout) interrupt */ // TODO should this be disabled?
-    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc | TC_CCCINTLVL_OFF_gc; /* Keep interrupt disabled, they will be enabled later on */
+    CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Keep overflow interrupt (second half-bit) disabled */
+    CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc | TC_CCCINTLVL_OFF_gc; /* Keep all compare interrupt disabled, they will be enabled later on */
     CODEC_TIMER_LOADMOD.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer */
 
     /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
@@ -453,8 +453,8 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
  * we should have a relevant number of pulses
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     if (CODEC_TIMER_TIMESTAMPS.CNT < 15) {
         /* We most likely received garbage */
@@ -525,7 +525,7 @@ ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
  * It replaces isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout once the SOF is received
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
 
@@ -560,7 +560,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
 
                     /* Restore other interrupts as per original setup (same as CardSniffInit) */
                     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Re enable 3rd pulse thresh update */
-                    CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Re enable overflow (SOF timeout) interrupt */
+                    CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Disable overflow interrupt (second half-bit) */
                     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc | TC_CCCINTLVL_OFF_gc; /* Disable all compare channel interrupts */
 
                     /* Reset timers */
@@ -579,6 +579,8 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
 
             case DEMOD_VICC_DATA:
                 if (SampleRegisterL == VICC_EOC_CODE) {
+                    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
                     Flags.CardDemodFinished = 1;
 
                     CardByteCount = ByteCount; /* Copy to direction-specific variable */
@@ -586,6 +588,45 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
                     /* Call cleanup function */
                     CardSniffDeinit();
                     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+                } else if (
+                    (SampleRegisterL & 0b00000011) == 0b00000011 || /* Ugly, I know */
+                    (SampleRegisterL & 0b00000011) == 0b00000000 ||
+                    (SampleRegisterL & 0b00001100) == 0b00001100 ||
+                    (SampleRegisterL & 0b00001100) == 0b00000000 ||
+                    (SampleRegisterL & 0b00110000) == 0b00110000 ||
+                    (SampleRegisterL & 0b00110000) == 0b00000000 ||
+                    (SampleRegisterL & 0b11000000) == 0b11000000 ||
+                    (SampleRegisterL & 0b11000000) == 0b00000000 ||
+                    (SampleRegisterH & 0b00000011) == 0b00000011 ||
+                    (SampleRegisterH & 0b00000011) == 0b00000000 ||
+                    (SampleRegisterH & 0b00001100) == 0b00001100 ||
+                    (SampleRegisterH & 0b00001100) == 0b00000000 ||
+                    (SampleRegisterH & 0b00110000) == 0b00110000 ||
+                    (SampleRegisterH & 0b00110000) == 0b00000000 ||
+                    (SampleRegisterH & 0b11000000) == 0b11000000 ||
+                    (SampleRegisterH & 0b11000000) == 0b00000000
+                ) {
+                    /**
+                     * Check for invalid data coding (11 or 00 bit-halfs).
+                     * Write 0x0BADDA7A in log to mark broken frame and stop here: we have
+                     * no knowledge about where the EOF could be
+                     */
+
+                    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+
+                    *(CodecBufferPtr++) = 0x0B;
+                    *(CodecBufferPtr++) = 0xAD;
+                    *(CodecBufferPtr++) = 0xDA;
+                    *(CodecBufferPtr++) = 0x7A;
+                    ByteCount += 4;
+
+                    Flags.CardDemodFinished = 1;
+
+                    CardByteCount = ByteCount; /* Copy to direction-specific variable */
+
+                    /* Call cleanup function */
+                    CardSniffDeinit();
+
                 } else {
                     DataRegister  = ( (SampleRegisterL & 0b00000011) == 0b00000001) << 3;
                     DataRegister |= ( (SampleRegisterL & 0b00001100) == 0b00000100) << 2;
