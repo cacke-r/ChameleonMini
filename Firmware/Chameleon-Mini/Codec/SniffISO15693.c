@@ -110,7 +110,7 @@ ISR_SHARED SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT(void) {
                     SampleDataCount = 0;
                 } else { // No SOC. Restart and try again, we probably received garbage.
                     Flags.ReaderDemodFinished = 1;
-                    Flags.CardDemodFinished = 1;
+                    Flags.CardDemodFinished = 1; /* Mark Card Demod as finished as well to restart clean in CodecTagk (no bytes received -> no log) */
                     /* Sets timer off for CODEC_TIMER_SAMPLING (TCD0) disabling clock source */
                     CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_OFF_gc;
                     /* Sets register INTCTRLB to 0 to disable all compare/capture interrupts */
@@ -379,7 +379,6 @@ INLINE void CardSniffInit(void) {
     /* Reinit state variables */
     CodecBufferPtr = CodecBuffer;
     ByteCount = 0; // TODO use register?
-    CardByteCount = 0; /* Clear direction-specific counter */
 
     /* This function ends ~116 us after last VCD pulse, still in the 300 us period given by ISO15693 section 8.5 */
 }
@@ -407,8 +406,8 @@ void CardSniffDeinit(void) {
 
     /* Stop timer/counters disabling clock sources */
     CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_OFF_gc;
-    CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc;
-    CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_EVCH2_gc;
+    CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_OFF_gc;
+    CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_OFF_gc;
 
     /* Reset ACA AC0 to default setting */
     ACA.AC0MUXCTRL = AC_MUXPOS_DAC_gc | AC_MUXNEG_PIN7_gc; /* This actually was unchanged */
@@ -515,6 +514,7 @@ ISR(CODEC_TIMER_LOADMOD_CCC_VECT) {
  */
 ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
     Flags.CardDemodFinished = 1;
+    ByteCount = 0; // TODO use register?
 
     /* Call cleanup function */
     CardSniffDeinit();
@@ -526,7 +526,7 @@ ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
     PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
 
     /**
@@ -583,6 +583,8 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
 
                     CardByteCount = ByteCount; /* Copy to direction-specific variable */
 
+                    /* Call cleanup function */
+                    CardSniffDeinit();
                     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
                 } else {
                     DataRegister  = ( (SampleRegisterL & 0b00000011) == 0b00000001) << 3;
@@ -597,6 +599,13 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
                     *CodecBufferPtr = DataRegister;
                     CodecBufferPtr++;
                     ByteCount++;
+                    if (CodecBufferPtr == 256) {
+                        /* Somehow missed the EOF and running out of buffer */
+                        Flags.CardDemodFinished = 1;
+
+                        /* Call cleanup function */
+                        CardSniffDeinit();
+                    };
                 }
                 break;
         }
@@ -633,7 +642,8 @@ void StartSniffISO15693Demod(void) {
     SampleDataCount = 0;
     ModulationPauseCount = 0;
     ByteCount = 0;
-    ReaderByteCount = 0; /* Clear direction-specific counter */
+    ReaderByteCount = 0; /* Clear direction-specific counters */
+    CardByteCount = 0;
     ShiftRegister = 0;
 
     /* Activate Power for demodulator */
