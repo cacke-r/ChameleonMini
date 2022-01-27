@@ -60,11 +60,6 @@ CODEC_TIMER_LOADMOD_CCB_VECT:
 CODEC_TIMER_TIMESTAMPS_CCA_VECT:
     call_isr isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT
 
-.global CODEC_TIMER_TIMESTAMPS_CCB_VECT
-CODEC_TIMER_TIMESTAMPS_CCB_VECT:
-    call_isr isr_func_CODEC_TIMER_TIMESTAMPS_CCB_VECT
-
-; Share Analog Comparator vector
 .global ACA_AC0_vect
 ACA_AC0_vect:
     call_isr isr_func_ACA_AC0_vect

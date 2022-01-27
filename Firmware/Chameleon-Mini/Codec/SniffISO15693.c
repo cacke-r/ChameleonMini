@@ -331,7 +331,6 @@ INLINE void CardSniffInit(void) {
      *
      * CCA = 3 pulses, to update the threshold to a more suitable value for upcoming pulses
      */
-    // TODO unshare interrupt CODEC_TIMER_TIMESTAMPS CCB
     CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
     CODEC_TIMER_TIMESTAMPS.CCA = 3;
     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable CCA interrupt */
