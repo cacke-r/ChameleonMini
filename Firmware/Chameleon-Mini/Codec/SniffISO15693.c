@@ -11,8 +11,6 @@
 #include "../Application/Application.h"
 #include "LEDHook.h"
 #include "AntennaLevel.h"
-#include "Terminal/Terminal.h" // TODO_sniff remove
-
 
 #define VCD_SOC_1_OF_4_CODE         0x7B
 #define VCD_SOC_1_OF_256_CODE       0x7E
@@ -33,7 +31,7 @@
 #define SampleRegister          CodecCount16Register1
 #define SampleRegisterH         GPIOR4 /* CodecCount16Register1 is the composition of GPIOR4 and GPIOR5, divide them for easier read access */
 #define SampleRegisterL         GPIOR5
-// #define FloorNoiseLevelDelta    CodecCount16Register2
+#define DemodFloorNoiseLevel    CodecCount16Register2
 #define CodecBufferPtr          CodecPtrRegister1
 
 static volatile struct {
@@ -49,8 +47,6 @@ typedef enum {
     DEMOD_VICC_DATA,
 } DemodSniffStateType;
 
-static volatile uint16_t DemodFloorNoiseLevel;
-
 static volatile DemodSniffStateType DemodState;
 static volatile uint8_t ShiftRegister;
 static volatile uint8_t ByteCount;
@@ -59,12 +55,74 @@ static volatile uint8_t CardByteCount;
 static volatile uint16_t DemodByteCount;
 static volatile uint16_t SampleDataCount;
 
-INLINE void SNIFF_ISO15693_READER_EOC_VCD(void);
-INLINE void CardSniffInit(void);
-
 /////////////////////////////////////////////////
 // VCD->VICC
 /////////////////////////////////////////////////
+
+/* This functions resets all global variables used in the codec and enables interrupts to wait for reader data */
+void ReaderSniffInit(void) {
+    /* Reset global variables to default values */
+    CodecBufferPtr = CodecBuffer;
+    Flags.ReaderDemodFinished = 0;
+    Flags.CardDemodFinished = 0;
+    DemodState = DEMOD_VCD_SOC_STATE;
+    DataRegister = 0;
+    SampleRegister = 0;
+    BitSampleCount = 0;
+    SampleDataCount = 0;
+    ModulationPauseCount = 0;
+    ByteCount = 0;
+    ReaderByteCount = 0; /* Clear direction-specific counters */
+    CardByteCount = 0;
+    ShiftRegister = 0;
+
+    /* Activate Power for demodulator */
+    CodecSetDemodPower(true);
+
+    /* Configure sampling-timer free running and sync to first modulation-pause. */
+    /* Resets the counter to 0 */
+    CODEC_TIMER_TIMESTAMPS.CNT = 0;
+    /* Set the period for CODEC_TIMER_SAMPLING (TCD0) to ISO15693_READER_SAMPLE_PERIOD - 1 because PER is 0-based */
+    CODEC_TIMER_SAMPLING.PER = ISO15693_READER_SAMPLE_PERIOD - 1;
+    /* Set Counter Channel C (CCC) register with half bit period - 1. (- 14 to compensate ISR timing overhead) */
+    CODEC_TIMER_SAMPLING.CCC = ISO15693_READER_SAMPLE_PERIOD / 2 - 14 - 1;
+    /* Set timer for CODEC_TIMER_SAMPLING (TCD0) to ISO15693_READER_SAMPLE_CLK = TC_CLKSEL_DIV2_gc = System Clock / 2
+     *
+     * TODO Why system clock / 2 and not iso period?
+     */
+    CODEC_TIMER_SAMPLING.CTRLA = ISO15693_READER_SAMPLE_CLK;
+    /* Set event action for CODEC_TIMER_SAMPLING (TCD0) to restart and trigger CODEC_TIMER_MODSTART_EVSEL = TC_EVSEL_CH0_gc = Event Channel 0 */
+    CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
+    /* Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm), the period for clock sampling is specified above */
+    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
+    /* Sets register INTCTRLB to TC_CCCINTLVL_OFF_gc = (0x00<<4) to disable compare/capture C interrupts
+     * It is now turned off in order to wait for the first pulse and start sampling once it occurs,
+     * will be enabled in isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT
+     */
+    CODEC_TIMER_SAMPLING.INTCTRLB = TC_CCCINTLVL_OFF_gc;
+
+    /* Set event action for CODEC_TIMER_LOADMOD (TCE0) to restart and trigger CODEC_TIMER_MODSTART_EVSEL = TC_EVSEL_CH0_gc = Event Channel 0 */
+    CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
+    /* Set the period for CODEC_TIMER_LOADMOD (TCE0) to... some magic numbers?
+     * Using PER instead of PERBUF breaks it when receiving ISO15693_APP_NO_RESPONSE from Application.
+     *
+     * TODO What are these numbers?
+     */
+    CODEC_TIMER_LOADMOD.PERBUF = 4192 + 128 + 128 - 1;
+    /* Sets register INTCTRLA to 0 to disable timer error or overflow interrupts */
+    CODEC_TIMER_LOADMOD.INTCTRLA = 0;
+    /* Sets register INTCTRLB to 0 to disable all compare/capture interrupts */
+    CODEC_TIMER_LOADMOD.INTCTRLB = 0;
+    /* Set timer for CODEC_TIMER_SAMPLING (TCD0) to TC_CLKSEL_EVCH6_gc = Event Channel 6 */
+    CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_EVCH6_gc;
+
+    /* Start looking out for modulation pause via interrupt. */
+    /* Sets register INTFLAGS to PORT_INT0LVL_HI_gc = (0x03<<0) to enable compare/capture for high level interrupts on CODEC_DEMOD_IN_PORT (PORTB) */
+    CODEC_DEMOD_IN_PORT.INTFLAGS = PORT_INT0LVL_HI_gc;
+    /* Sets INT0MASK to CODEC_DEMOD_IN_MASK0 = PIN1_bm to use it as source for port interrupt 0 */
+    CODEC_DEMOD_IN_PORT.INT0MASK = CODEC_DEMOD_IN_MASK0;
+}
+
 
 /* This function implements CODEC_DEMOD_IN_INT0_VECT interrupt vector.
  * It is called when a pulse is detected in CODEC_DEMOD_IN_PORT (PORTB).
@@ -75,7 +133,7 @@ INLINE void CardSniffInit(void);
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT(void) {
     /* Start sample timer CODEC_TIMER_SAMPLING (TCD0).
      * Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm),
-     * the period for clock sampling is specified in StartSniffISO15693Demod.
+     * the period for clock sampling is specified in ReaderSniffInit.
      */
     CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
     /* Sets register INTCTRLB to TC_CCCINTLVL_HI_gc = (0x03<<4) to enable compare/capture for high level interrupts on Channel C (CCC) */
@@ -222,23 +280,8 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
 // VICC->VCD
 /////////////////////////////////////////////////
 
-/**
- * INTERRUPT SETUP:
- *  - CODEC_TIMER_TIMESTAMPS:
- *      Counts pulses received from the reader.
- *      Overflow when SOC is finished
- *      Counter channel A to get updated pulses amplitude after 3 pulses.
- *  - CODEC_TIMER_LOADMOD:
- *      Analyze pulse timings.
- *      Overflow when no SOC pulse is received after 1000 us (card did not respond)
- *      Counter channel A called every half-bit during data transmission
- *      Counter channel B called every pulse to validate SOC reception
- *  - Analog Comparator channel 0:
- *      Update pulse amplitude on first pulse
- */
-
-/* Currently implemented only single subcarrier SOC detection
- * TODO extract to single subcarrier specific function and call this or double subcarrier
+/* Initialize card sniffing options
+Note: Currently implemented only single subcarrier SOC detection
  */
 INLINE void CardSniffInit(void) {
     /* Reinit state variables */
@@ -316,7 +359,8 @@ INLINE void CardSniffInit(void) {
      *      - prepares the codec for data demodulation when a SOF is found
      *  - Compare channel C samples the first half-bit (called 18,88 us after bit start) - while decoding data
      *
-     * It is restarted on every event on event channel 2 until the first 24 pulses of the SOC have been received.
+     * It is restarted on every event on event channel 2 until the first 24 pulses of the SOC have been received, then
+     * it restarts on period overflow (after one full logic bit).
      *
      * Interrupt on compare channel A will be called every 64 clock cycles, unless this timer is reset by a new
      * pulse. This means that interrupt on CCA will be called after some pulses, be it one or more.
@@ -330,7 +374,7 @@ INLINE void CardSniffInit(void) {
      * Every 16 half-bits, this will also convert the samples to a byte and store it in the codec buffer.
      * It will also check for EOF to stop card decoding.
      *
-     * PER = maximum card wait time (1000 us). If no data recived by this moment, restart sampling reader data
+     * PER = one logic bit duration (27,76 us)
      * CCA = duration of a single pulse (2,36 us: half hi + half low)
      * CCC = half-bit duration (18,88 us)
      */
@@ -655,7 +699,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
                     *CodecBufferPtr = DataRegister;
                     CodecBufferPtr++;
                     ByteCount++;
-                    if (CodecBufferPtr == 256) {
+                    if (ByteCount == 256) {
                         /* Somehow missed the EOF and running out of buffer */
                         Flags.CardDemodFinished = 1;
 
@@ -675,79 +719,6 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-/* This functions resets all global variables used in the codec and enables interrupts to wait for reader data */
-void StartSniffISO15693Demod(void) {
-    /* Reset global variables to default values */
-    CodecBufferPtr = CodecBuffer;
-    Flags.ReaderDemodFinished = 0;
-    Flags.CardDemodFinished = 0;
-    DemodState = DEMOD_VCD_SOC_STATE;
-    DataRegister = 0;
-    SampleRegister = 0;
-    BitSampleCount = 0;
-    SampleDataCount = 0;
-    ModulationPauseCount = 0;
-    ByteCount = 0;
-    ReaderByteCount = 0; /* Clear direction-specific counters */
-    CardByteCount = 0;
-    ShiftRegister = 0;
-
-    /* Activate Power for demodulator */
-    CodecSetDemodPower(true);
-
-    /* Configure sampling-timer free running and sync to first modulation-pause. */
-    /* Resets the counter to 0 */
-    CODEC_TIMER_TIMESTAMPS.CNT = 0;
-    /* Set the period for CODEC_TIMER_SAMPLING (TCD0) to ISO15693_READER_SAMPLE_PERIOD - 1 because PER is 0-based */
-    CODEC_TIMER_SAMPLING.PER = ISO15693_READER_SAMPLE_PERIOD - 1;
-    /* Set Counter Channel C (CCC) register with half bit period - 1. (- 14 to compensate ISR timing overhead) */
-    CODEC_TIMER_SAMPLING.CCC = ISO15693_READER_SAMPLE_PERIOD / 2 - 14 - 1;
-    /* Set timer for CODEC_TIMER_SAMPLING (TCD0) to ISO15693_READER_SAMPLE_CLK = TC_CLKSEL_DIV2_gc = System Clock / 2
-     *
-     * TODO Why system clock / 2 and not iso period?
-     */
-    CODEC_TIMER_SAMPLING.CTRLA = ISO15693_READER_SAMPLE_CLK;
-    /* Set event action for CODEC_TIMER_SAMPLING (TCD0) to restart and trigger CODEC_TIMER_MODSTART_EVSEL = TC_EVSEL_CH0_gc = Event Channel 0 */
-    CODEC_TIMER_SAMPLING.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
-    /* Set Counter Channel C (CCC) with relevant bitmask (TC0_CCCIF_bm), the period for clock sampling is specified above */
-    CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;  // TODO Why writing to a FLAG register? We need only to READ this...
-    /* Sets register INTCTRLB to TC_CCCINTLVL_OFF_gc = (0x00<<4) to disable compare/capture C interrupts
-     * It is now turned off in order to wait for the first pulse and start sampling once it occurs,
-     * will be enabled in isr_ISO15693_CODEC_DEMOD_IN_INT0_VECT
-     */
-    CODEC_TIMER_SAMPLING.INTCTRLB = TC_CCCINTLVL_OFF_gc;
-
-    /* Set event action for CODEC_TIMER_LOADMOD (TCE0) to restart and trigger CODEC_TIMER_MODSTART_EVSEL = TC_EVSEL_CH0_gc = Event Channel 0 */
-    CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | CODEC_TIMER_MODSTART_EVSEL;
-    /* Set the period for CODEC_TIMER_LOADMOD (TCE0) to... some magic numbers?
-     * Using PER instead of PERBUF breaks it when receiving ISO15693_APP_NO_RESPONSE from Application.
-     *
-     * TODO What are these numbers?
-     */
-    CODEC_TIMER_LOADMOD.PERBUF = 4192 + 128 + 128 - 1;
-    /* Sets register INTCTRLA to 0 to disable timer error or overflow interrupts */
-    CODEC_TIMER_LOADMOD.INTCTRLA = 0;
-    /* Sets register INTCTRLB to 0 to disable all compare/capture interrupts */
-    CODEC_TIMER_LOADMOD.INTCTRLB = 0;
-    /* Set timer for CODEC_TIMER_SAMPLING (TCD0) to TC_CLKSEL_EVCH6_gc = Event Channel 6 */
-    CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_EVCH6_gc;
-
-    /* Start looking out for modulation pause via interrupt. */
-    /* Sets register INTFLAGS to PORT_INT0LVL_HI_gc = (0x03<<0) to enable compare/capture for high level interrupts on CODEC_DEMOD_IN_PORT (PORTB) */
-    CODEC_DEMOD_IN_PORT.INTFLAGS = PORT_INT0LVL_HI_gc;
-    /* Sets INT0MASK to CODEC_DEMOD_IN_MASK0 = PIN1_bm to use it as source for port interrupt 0 */
-    CODEC_DEMOD_IN_PORT.INT0MASK = CODEC_DEMOD_IN_MASK0;
-}
 
 void SniffISO15693CodecInit(void) {
     // TODO_sniff temp code start
@@ -777,7 +748,7 @@ void SniffISO15693CodecInit(void) {
     /* Change DAC reference source to Internal 1V (same as ADC source) */
     DACB.CTRLC = DAC_REFSEL_INT1V_gc;
 
-    StartSniffISO15693Demod();
+    ReaderSniffInit();
 }
 
 void SniffISO15693CodecDeInit(void) {
@@ -840,6 +811,6 @@ void SniffISO15693CodecTask(void) {
 
         }
 
-        StartSniffISO15693Demod();
+        ReaderSniffInit();
     }
 }

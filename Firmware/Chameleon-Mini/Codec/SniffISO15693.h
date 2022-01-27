@@ -24,7 +24,6 @@
 #define ISO15693_REQ_DATARATE_LOW       0x00
 #define ISO15693_REQ_DATARATE_HIGH      0x02
 
-
 /* Codec Interface */
 void SniffISO15693CodecInit(void);
 void SniffISO15693CodecDeInit(void);
@@ -34,6 +33,9 @@ void SniffISO15693CodecTask(void);
 void SniffISO15693CodecStart(void);
 void SniffISO15693CodecReset(void);
 
+/* Internal functions */
+INLINE void SNIFF_ISO15693_READER_EOC_VCD(void);
+INLINE void CardSniffInit(void);
 
 
 #endif  /* SNIFF_ISO15693_H_ */
