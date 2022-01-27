@@ -264,7 +264,7 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
     CODEC_TIMER_SAMPLING.INTFLAGS = TC0_CCCIF_bm;
 
     /* And initialize VICC->VCD sniffer */
-    CardSniffInit(); // TODO_sniff can this be moved to CodecTask or would it be too slow and we'd loose some bits?
+    CardSniffInit();
 }
 
 /////////////////////////////////////////////////
@@ -277,7 +277,7 @@ Note: Currently implemented only single subcarrier SOC detection
 INLINE void CardSniffInit(void) {
     /* Reinit state variables */
     CodecBufferPtr = CodecBuffer2;
-    ByteCount = 0; // TODO use register?
+    ByteCount = 0;
 
     if (CodecBuffer[0] & ISO15693_REQ_SUBCARRIER_DUAL) {
         /**
@@ -324,18 +324,13 @@ INLINE void CardSniffInit(void) {
     CODEC_TIMER_SAMPLING.CTRLA = TC_CLKSEL_DIV256_gc; /* Clocked at 1/256 CPU clock */
     CODEC_TIMER_SAMPLING.PER = 160; /* ~1500 us card response timeout */
     CODEC_TIMER_SAMPLING.INTCTRLA = TC_OVFINTLVL_HI_gc; /* Enable overflow (SOF timeout) interrupt */
-    CODEC_TIMER_SAMPLING.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer once it has been configured */ // TODO is this a problem when sniffing multiple frames?
+    CODEC_TIMER_SAMPLING.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer once it has been configured */
 
     /**
      * CODEC_TIMER_TIMESTAMPS (TCD1) will be used to count the peaks identified by ACA while sniffing VICC data
      *
      * CCA = 3 pulses, to update the threshold to a more suitable value for upcoming pulses
      */
-
-    /* Register CODEC_TIMER_TIMESTAMPS shared interrupt handlers before enabling the interrupt itself
-       to avoid jumping into random data in case the interrupt is triggered straight away */
-    isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT;
-
     // TODO unshare interrupt CODEC_TIMER_TIMESTAMPS CCB
     CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
     CODEC_TIMER_TIMESTAMPS.CCA = 3;
@@ -369,11 +364,6 @@ INLINE void CardSniffInit(void) {
      * CCA = duration of a single pulse (2,36 us: half hi + half low)
      * CCC = half-bit duration (18,88 us)
      */
-    /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
-    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* Handle spurious SOC (noise) detection */
-    /* CCC (first half-bit decoder) ISR is not shared, thus doesn't need to be assigned here */
-    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT; /* Second half-bit decoder */
-
     CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_DIV1_gc; /* Clocked at 27.12 MHz */
     CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH2_gc; /* Restart this timer on every event on channel 2 (pulse detected by AC) */
     CODEC_TIMER_LOADMOD.PER = 1024 - 8; /* One full logic bit duration, slightly shorter on first run to make room for SOC detection algoritm */
@@ -415,9 +405,6 @@ INLINE void CardSniffInit(void) {
      * channel 0 (the only one that can be connecte to the DAC) to recognize carrier pulses modulated by
      * the VICC against the correct threshold coming from the DAC.
      */
-    /* Register ACA channel 0 interrupt handler */
-    isr_func_ACA_AC0_vect = &isr_SNIFF_ISO15693_ACA_AC0_VECT;
-
     ACA.AC0MUXCTRL = AC_MUXPOS_DAC_gc | AC_MUXNEG_PIN7_gc; /* Tigger when DAC signal is above PORTA Pin 7 (DEMOD/2.3C) */
     /* enable AC | high speed mode | large hysteresis | sample on rising edge | high level interrupts */
     /* Hysteresis is not actually needed, but appeared to be working and sounds like it might be more robust */
@@ -461,9 +448,6 @@ void CardSniffDeinit(void) {
  * If we did not receive a SOC but, indeed, noise, this interrupt will be enabled again.
  */
 ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable level 0 CCA interrupt to filter spurious pulses and find SOC */
 
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_OFF_gc; /* Disable this interrupt */
@@ -477,17 +461,10 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
  * This interrupt is called after 3 subcarrier pulses and increases the threshold
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     uint16_t TempRead = ADCA.CH1RES; /* Can't possibly be greater than 0xFFF since the dac has 12 bit res */
     DACB.CH0DATA = TempRead - ANTENNA_LEVEL_OFFSET; /* Further increase DAC output after 3 pulses with value from PORTA Pin 2 (DEMOD-READER/2.3) */
     DACB.CH0DATA &= -(DACB.CH0DATA <= TempRead); /* Branchfree saturating subtraction */
-
-    // TODO remove
-    // DACB.CTRLB = DAC_CHSEL_DUAL_gc;
-    // DACB.CTRLA = DAC_IDOEN_bm | DAC_CH1EN_bm | DAC_ENABLE_bm;
-    // DACB.CH1DATA = DACB.CH0DATA;
 
     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_OFF_gc; /* Disable this interrupt */
 }
@@ -501,15 +478,10 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
  * we should have a relevant number of pulses
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-
     if (CODEC_TIMER_TIMESTAMPS.CNT < 15) {
         /* We most likely received garbage */
 
         CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc; /* Disable all compare interrupts, including this one */
-
-        // DemodFloorNoiseLevel += CODEC_THRESHOLD_CALIBRATE_STEPS; /* Slightly increase DAC output value */ // TODO check if this actually helps or is a trouble with low signals
 
         DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
         DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < DemodFloorNoiseLevel); /* Branchfree saturating addition */
@@ -545,8 +517,6 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
  * This interrupt is called on the first half-bit
  */
 ISR(CODEC_TIMER_LOADMOD_CCC_VECT) {
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     /**
      * This interrupt is called on every odd half-bit, thus we don't need to do any check,
      * just append to the sample register.
@@ -563,7 +533,6 @@ ISR(CODEC_TIMER_LOADMOD_CCC_VECT) {
  */
 ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
     Flags.CardDemodFinished = 1;
-    ByteCount = 0; // TODO use register?
 
     /* Call cleanup function */
     CardSniffDeinit();
@@ -574,10 +543,6 @@ ISR(CODEC_TIMER_SAMPLING_OVF_VECT) {
  * It replaces isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT_timeout once the SOF is received
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-
-
     /**
      * This interrupt is called on every even half-bit, we then need to check the content of the register
      */
@@ -629,15 +594,12 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
 
             case DEMOD_VICC_DATA:
                 if (SampleRegisterL == VICC_EOC_CODE) {
-                    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-
                     Flags.CardDemodFinished = 1;
 
                     CardByteCount = ByteCount; /* Copy to direction-specific variable */
 
                     /* Call cleanup function */
                     CardSniffDeinit();
-                    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
                 } else if (
                     (SampleRegisterL & 0b00000011) == 0b00000011 || /* Ugly, I know */
                     (SampleRegisterL & 0b00000011) == 0b00000000 ||
@@ -661,8 +623,6 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
                      * Write 0x0BADDA7A in log to mark broken frame and stop here: we have
                      * no knowledge about where the EOF could be
                      */
-
-                    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
                     *(CodecBufferPtr++) = 0x0B;
                     *(CodecBufferPtr++) = 0xAD;
@@ -705,26 +665,28 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
 }
 
 
-
-
-
-
-
+/////////////////////////////////////////////////
+// External interface
+/////////////////////////////////////////////////
 
 void SniffISO15693CodecInit(void) {
-    // TODO_sniff temp code start
-    PORTE.DIR = PIN0_bm;
-    // TODO_sniff temp code end
-
     CodecInitCommon();
 
     /**
      * Register function handlers to shared ISR
      */
-    /* Register SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT function to CODEC_TIMER_SAMPLING (TCD0)'s Counter Channel C (CCC) */
+    /* CODEC_TIMER_SAMPLING (TCD0)'s Counter Channel C (CCC) - Reader demod */
     isr_func_TCD0_CCC_vect = &SNIFF_ISO15693_READER_CODEC_TIMER_SAMPLING_CCC_VECT;
-    /* Register isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT function to CODEC_DEMOD_IN_PORT (PORTB) interrupt 0 */
+    /* CODEC_DEMOD_IN_PORT (PORTB) interrupt 0 - Reader demod */
     isr_func_CODEC_DEMOD_IN_INT0_VECT = &isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT;
+    /* CODEC_TIMER_TIMESTAMPS (TCD1)'s Counter Channel C (CCC) - Card demod */
+    isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT; /* Updated threshold after 3 pulses */
+    /* CODEC_TIMER_LOADMOD (TCE0)'s Counter Channel A (CCA) and overflow (OVF) - Card demod */
+    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* Spurious pulses and SOC detection */
+    /* CCC (first half-bit decoder) ISR is not shared, thus doesn't need to be assigned here */
+    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT; /* Second half-bit decoder */
+    /* Analog comparator A (ACA) channel 0 interrupt handler - Card demod */
+    isr_func_ACA_AC0_vect = &isr_SNIFF_ISO15693_ACA_AC0_VECT; /* Detect first card pulse and enable demod interrupts */
 
     /**
      * Route events from the analog comparator (which will be configured later) on the event system
