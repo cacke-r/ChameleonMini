@@ -362,6 +362,7 @@ INLINE void CardSniffInit(void) {
 
     /* Write threshold to the DAC channel 0 (connected to Analog Comparator positive input) */
     DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Slightly increase DAC output to ease triggering */
+    DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < DemodFloorNoiseLevel); /* Branchfree saturating addition */
 
     /**
      * Finally, now that we have the DAC set up, configure analog comparator A (the only one in this MCU)
@@ -380,7 +381,7 @@ INLINE void CardSniffInit(void) {
     CodecBufferPtr = CodecBuffer;
     ByteCount = 0; // TODO use register?
 
-    /* This function ends ~116 us after last VCD pulse, still in the 300 us period given by ISO15693 section 8.5 */
+    /* This function ends ~116 us after last VCD pulse */
 }
 
 /**
@@ -429,6 +430,7 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_OFF_gc; /* Disable this interrupt */
 
     DACB.CH0DATA = (DemodFloorNoiseLevel << 1) - (DemodFloorNoiseLevel >> 2); /* Blindly increase threshold after 1 pulse */
+    DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < (DemodFloorNoiseLevel << 1)); /* Branchfree saturating multiplication */
     /* Note: by the time the DAC has changed its output, we're already after the 2nd pulse */
 }
 
@@ -439,7 +441,9 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    DACB.CH0DATA = ADCA.CH1RES - ANTENNA_LEVEL_OFFSET; /* Further increase DAC output after 3 pulses with value from PORTA Pin 2 (DEMOD-READER/2.3) */
+    uint16_t TempRead = ADCA.CH1RES;
+    DACB.CH0DATA = TempRead - ANTENNA_LEVEL_OFFSET; /* Further increase DAC output after 3 pulses with value from PORTA Pin 2 (DEMOD-READER/2.3) */
+    DACB.CH0DATA &= -(DACB.CH0DATA <= TempRead); /* Branchfree saturating subtraction */
 
     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_OFF_gc; /* Disable this interrupt */
 }
@@ -464,6 +468,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT(void) {
         // DemodFloorNoiseLevel += CODEC_THRESHOLD_CALIBRATE_STEPS; /* Slightly increase DAC output value */ // TODO check if this actually helps or is a trouble with low signals
 
         DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3); /* Restore DAC output (AC negative comparation threshold) to pre-AC0 interrupt update value */
+        DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < DemodFloorNoiseLevel); /* Branchfree saturating addition */
         ACA.AC0CTRL |= AC_INTLVL_HI_gc; /* Re-enable analog comparator interrupt to search for another pulse */
 
         CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Re enable CCA interrupt in case it was triggered and then is now disabled */
@@ -554,6 +559,7 @@ ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT(void) {
 
                     /* Restore DAC output to intial value */
                     DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 3);
+                    DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < DemodFloorNoiseLevel); /* Branchfree saturating addition */
 
                     /* Re enable AC interrupt */
                     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_HI_gc;
