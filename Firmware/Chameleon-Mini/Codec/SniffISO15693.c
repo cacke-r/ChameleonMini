@@ -56,7 +56,6 @@ static volatile uint8_t ShiftRegister;
 static volatile uint8_t ByteCount;
 static volatile uint8_t ReaderByteCount;
 static volatile uint8_t CardByteCount;
-static volatile uint8_t bDualSubcarrier;
 static volatile uint16_t DemodByteCount;
 static volatile uint16_t SampleDataCount;
 
@@ -242,13 +241,24 @@ INLINE void SNIFF_ISO15693_READER_EOC_VCD(void) {
  * TODO extract to single subcarrier specific function and call this or double subcarrier
  */
 INLINE void CardSniffInit(void) {
-    /**
-     * Route events from the analog comparator (which will be configured later) on the event system
-     * using channel 2 (channel 0 and 1 are used by the antenna).
-     * These events will be counted by CODEC_TIMER_TIMESTAMPS and will (sometimes)
-     * reset CODEC_TIMER_LOADMOD.
-     */
-    EVSYS.CH2MUX = EVSYS_CHMUX_ACA_CH0_gc; /* Route analog comparator channel 0 events on event system channel 2 */
+    /* Reinit state variables */
+    CodecBufferPtr = CodecBuffer2;
+    ByteCount = 0; // TODO use register?
+
+    if (CodecBuffer[0] & ISO15693_REQ_SUBCARRIER_DUAL) {
+        /**
+         * No support for dual subcarrier, 0xBAAAAAAD in log to mark unsupported behavior and stop here
+         */
+        *(CodecBufferPtr++) = 0xBA;
+        *(CodecBufferPtr++) = 0xAA;
+        *(CodecBufferPtr++) = 0xAA;
+        *(CodecBufferPtr++) = 0xAD;
+        ByteCount += 4;
+        CardByteCount = ByteCount; /* Copy to direction-specific variable */
+
+        Flags.CardDemodFinished = 1;
+        return;
+    }
 
     /**
      * Prepare ADC for antenna field sampling
@@ -287,14 +297,16 @@ INLINE void CardSniffInit(void) {
      *
      * CCA = 3 pulses, to update the threshold to a more suitable value for upcoming pulses
      */
+
+    /* Register CODEC_TIMER_TIMESTAMPS shared interrupt handlers before enabling the interrupt itself
+       to avoid jumping into random data in case the interrupt is triggered straight away */
+    isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT;
+
     // TODO unshare interrupt CODEC_TIMER_TIMESTAMPS CCB
     CODEC_TIMER_TIMESTAMPS.CTRLA = TC_CLKSEL_EVCH2_gc; /* Using Event channel 2 as an input */
     CODEC_TIMER_TIMESTAMPS.CCA = 3;
     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable CCA interrupt */
     CODEC_TIMER_TIMESTAMPS.CTRLFSET = TC_CMD_RESTART_gc; /* Reset counter once it has been configured */
-
-    /* Register CODEC_TIMER_TIMESTAMPS shared interrupt handlers */
-    isr_func_CODEC_TIMER_TIMESTAMPS_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT;
 
     /**
      * CODEC_TIMER_LOADMOD (TCE0) has multiple usages:
@@ -322,9 +334,13 @@ INLINE void CardSniffInit(void) {
      * CCA = duration of a single pulse (2,36 us: half hi + half low)
      * CCC = half-bit duration (18,88 us)
      */
+    /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
+    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* Handle spurious SOC (noise) detection */
+    /* CCC (first half-bit decoder) ISR is not shared, thus doesn't need to be assigned here */
+    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT; /* Second half-bit decoder */
+
     CODEC_TIMER_LOADMOD.CTRLA = TC_CLKSEL_DIV1_gc; /* Clocked at 27.12 MHz */
     CODEC_TIMER_LOADMOD.CTRLD = TC_EVACT_RESTART_gc | TC_EVSEL_CH2_gc; /* Restart this timer on every event on channel 2 (pulse detected by AC) */
-    /* Change CODEC_TIMER_LOADMOD period to one full logic bit length */
     CODEC_TIMER_LOADMOD.PER = 1024 - 8; /* One full logic bit duration, slightly shorter on first run to make room for SOC detection algoritm */
     CODEC_TIMER_LOADMOD.PERBUF = 1024 - 1; /* One full logic bit duration - 1 (accommodate for small clock drift) */
     CODEC_TIMER_LOADMOD.CCA = 64; /* Single pulse width */
@@ -333,11 +349,6 @@ INLINE void CardSniffInit(void) {
     CODEC_TIMER_LOADMOD.INTCTRLA = TC_OVFINTLVL_OFF_gc; /* Keep overflow interrupt (second half-bit) disabled */
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_OFF_gc | TC_CCBINTLVL_OFF_gc | TC_CCCINTLVL_OFF_gc; /* Keep all compare interrupt disabled, they will be enabled later on */
     CODEC_TIMER_LOADMOD.CTRLFSET = TC_CMD_RESTART_gc; /* Reset timer */
-
-    /* Register CODEC_TIMER_LOADMOD shared interrupt handlers */
-    isr_func_CODEC_TIMER_LOADMOD_CCA_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_CCA_VECT; /* Handle spurious SOC (noise) detection */
-    /* CCC (first half-bit decoder) ISR is not shared, thus doesn't need to be assigned here */
-    isr_func_CODEC_TIMER_LOADMOD_OVF_VECT = &isr_SNIFF_ISO15693_CODEC_TIMER_LOADMOD_OVF_VECT; /* Second half-bit decoder */
 
     /**
      * Get current signal amplitude and record it as "silence"
@@ -377,11 +388,7 @@ INLINE void CardSniffInit(void) {
     /* Hysteresis is not actually needed, but appeared to be working and sounds like it might be more robust */
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_HI_gc;
 
-    /* Reinit state variables */
-    CodecBufferPtr = CodecBuffer;
-    ByteCount = 0; // TODO use register?
-
-    /* This function ends ~116 us after last VCD pulse */
+    /* This function ends ~100 us after last VCD pulse */
 }
 
 /**
@@ -395,9 +402,6 @@ void CardSniffDeinit(void) {
     ADCA.CTRLB = ADC_RESOLUTION_12BIT_gc; /* Stop free running ADC */
     ADCA.EVCTRL = 0; /* Stop channel sweep or any ADC event */
     /* Ignore channel 1 and 2 mux settings (no "off" state) */
-
-    /* Stop AC0 events routing on channel 2 */
-    EVSYS.CH2MUX = EVSYS_CHMUX_OFF_gc;
 
     /* Disable all timers interrupts */
     CODEC_TIMER_SAMPLING.INTCTRLA = TC_OVFINTLVL_OFF_gc;
@@ -762,6 +766,14 @@ void SniffISO15693CodecInit(void) {
      */
     isr_func_CODEC_DEMOD_IN_INT0_VECT = &isr_SNIFF_ISO15693_CODEC_DEMOD_READER_IN_INT0_VECT;
 
+    /**
+     * Route events from the analog comparator (which will be configured later) on the event system
+     * using channel 2 (channel 0 and 1 are used by the antenna).
+     * These events will be counted by CODEC_TIMER_TIMESTAMPS and will (sometimes)
+     * reset CODEC_TIMER_LOADMOD.
+     */
+    EVSYS.CH2MUX = EVSYS_CHMUX_ACA_CH0_gc; /* Route analog comparator channel 0 events on event system channel 2 */
+
     /* Change DAC reference source to Internal 1V (same as ADC source) */
     DACB.CTRLC = DAC_REFSEL_INT1V_gc;
 
@@ -797,6 +809,9 @@ void SniffISO15693CodecDeInit(void) {
 
     CodecSetDemodPower(false);
 
+    /* Stop AC0 events routing on channel 2 */
+    EVSYS.CH2MUX = EVSYS_CHMUX_OFF_gc;
+
     /* Restore default DAC reference to Codec.h setting */
     DACB.CTRLC = DAC_REFSEL_AVCC_gc;
 }
@@ -806,15 +821,10 @@ void SniffISO15693CodecTask(void) {
         Flags.ReaderDemodFinished = 0;
 
         DemodByteCount = ReaderByteCount;
-        bDualSubcarrier = 0;
 
         if (DemodByteCount > 0) {
             LogEntry(LOG_INFO_CODEC_SNI_READER_DATA, CodecBuffer, DemodByteCount);
             LEDHook(LED_CODEC_RX, LED_PULSE);
-
-            if (CodecBuffer[0] & ISO15693_REQ_SUBCARRIER_DUAL) {
-                bDualSubcarrier = 1;
-            }
         }
 
     }
@@ -825,7 +835,7 @@ void SniffISO15693CodecTask(void) {
         DemodByteCount = CardByteCount;
 
         if (DemodByteCount > 0) {
-            LogEntry(LOG_INFO_CODEC_SNI_CARD_DATA, CodecBuffer, DemodByteCount);
+            LogEntry(LOG_INFO_CODEC_SNI_CARD_DATA, CodecBuffer2, DemodByteCount);
             LEDHook(LED_CODEC_RX, LED_PULSE);
 
         }
