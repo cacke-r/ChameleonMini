@@ -422,15 +422,15 @@ void CardSniffDeinit(void) {
  * If we did not receive a SOC but, indeed, noise, this interrupt will be enabled again.
  */
 ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
     CODEC_TIMER_LOADMOD.INTCTRLB = TC_CCAINTLVL_HI_gc; /* Enable level 0 CCA interrupt to filter spurious pulses and find SOC */
 
     ACA.AC0CTRL = AC_ENABLE_bm | AC_HSMODE_bm | AC_HYSMODE_LARGE_gc | AC_INTMODE_RISING_gc | AC_INTLVL_OFF_gc; /* Disable this interrupt */
 
-    DACB.CH0DATA = (DemodFloorNoiseLevel << 1) - (DemodFloorNoiseLevel >> 2); /* Blindly increase threshold after 1 pulse */
-    DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < (DemodFloorNoiseLevel << 1)); /* Branchfree saturating multiplication */
+    DACB.CH0DATA = DemodFloorNoiseLevel + (DemodFloorNoiseLevel >> 2); /* Blindly increase threshold after 1 pulse */
+    DACB.CH0DATA |= -( (DACB.CH0DATA & 0xFFF) < DemodFloorNoiseLevel); /* Branchfree saturating addition */
     /* Note: by the time the DAC has changed its output, we're already after the 2nd pulse */
 }
 
@@ -438,12 +438,17 @@ ISR_SHARED isr_SNIFF_ISO15693_ACA_AC0_VECT(void) {
  * This interrupt is called after 3 subcarrier pulses and increases the threshold
  */
 ISR_SHARED isr_SNIFF_ISO15693_CODEC_TIMER_TIMESTAMPS_CCA_VECT(void) {
-    // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
+    PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
     // PORTE.OUTTGL = PIN0_bm; // TODO_sniff remove this testing code
 
-    uint16_t TempRead = ADCA.CH1RES;
+    uint16_t TempRead = ADCA.CH1RES; /* Can't possibly be greater than 0xFFF since the dac has 12 bit res */
     DACB.CH0DATA = TempRead - ANTENNA_LEVEL_OFFSET; /* Further increase DAC output after 3 pulses with value from PORTA Pin 2 (DEMOD-READER/2.3) */
     DACB.CH0DATA &= -(DACB.CH0DATA <= TempRead); /* Branchfree saturating subtraction */
+
+    // TODO remove
+    // DACB.CTRLB = DAC_CHSEL_DUAL_gc;
+    // DACB.CTRLA = DAC_IDOEN_bm | DAC_CH1EN_bm | DAC_ENABLE_bm;
+    // DACB.CH1DATA = DACB.CH0DATA;
 
     CODEC_TIMER_TIMESTAMPS.INTCTRLB = TC_CCAINTLVL_OFF_gc; /* Disable this interrupt */
 }
