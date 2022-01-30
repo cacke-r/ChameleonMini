@@ -738,6 +738,7 @@ void SniffISO15693CodecTask(void) {
         if (DemodByteCount > 0) {
             LogEntry(LOG_INFO_CODEC_SNI_READER_DATA, CodecBuffer, DemodByteCount);
             LEDHook(LED_CODEC_RX, LED_PULSE);
+            ApplicationProcess(CodecBuffer, DemodByteCount);
         }
 
     }
@@ -750,6 +751,7 @@ void SniffISO15693CodecTask(void) {
         if (DemodByteCount > 0) {
             LogEntry(LOG_INFO_CODEC_SNI_CARD_DATA, CodecBuffer2, DemodByteCount);
             LEDHook(LED_CODEC_RX, LED_PULSE);
+            ApplicationProcess(CodecBuffer, DemodByteCount);
 
         }
 
