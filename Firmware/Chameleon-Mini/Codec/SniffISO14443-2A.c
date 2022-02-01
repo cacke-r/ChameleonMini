@@ -56,8 +56,6 @@ static volatile uint16_t ReaderBitCount;
 static volatile uint16_t CardBitCount;
 static volatile uint16_t rawBitCount;
 
-enum RCTraffic TrafficSource;
-
 INLINE void CardSniffInit(void);
 INLINE void CardSniffDeinit(void);
 
