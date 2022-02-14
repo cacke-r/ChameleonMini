@@ -38,6 +38,7 @@ void SniffISO15693CodecReset(void);
 /* find a proper threshold */
 /* In this case, the application can run an autocalibration session */
 void SniffISO15693CtrlAutoThreshold(bool enable);
+bool SniffISO15693GetAutoThreshold(void);
 
 /* Function is used to receive the measured FloorNoise */
 /* This is used to narrow down the range, which is considered for */

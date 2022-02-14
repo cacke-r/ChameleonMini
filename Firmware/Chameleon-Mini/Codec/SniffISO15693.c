@@ -707,6 +707,14 @@ void SniffISO15693CodecInit(void) {
 }
 
 /************************************************************
+    Function used by the Terminal command to display (GET)
+    the state of the Autothreshold Feature.
+************************************************************/
+bool SniffISO15693GetAutoThreshold(void){
+    return bAutoThreshold;
+}
+
+/************************************************************
     Function used by the Application level to disable the
     Autothreshold Feature.
     If it is disabled: The threshold will be taken from
